@@ -14,11 +14,15 @@ __pycache__/
 venv/
 env/
 
-# Binary models & data directories
+# Binary models & runtime data directories.
+# Root-anchored: a bare "memory/" would also match the source package at
+# hermes-agent/skills/voice_avatar/memory/. These match only the runtime
+# dirs created at the repo root (see MODEL_CACHE_DIR / AGENT_KEYSTORE_DIR /
+# PERSISTENT_MEMORY_DIR in .env.example).
 *.onnx
-models/
-keys/
-memory/
+/models/
+/keys/
+/memory/
 
 # Environment configuration
 .env
