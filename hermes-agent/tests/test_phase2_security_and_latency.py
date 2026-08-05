@@ -83,42 +83,38 @@ async def test_relay_consent_signature_verification_and_forgery_rejection():
 
 
 @pytest.mark.parametrize(
-    "label,event,pubkey,expected",
+    "label,event,pubkey",
     [
-        ("valid event", VALID_EVENT, HUMAN_PK, True),
+        ("valid event", VALID_EVENT, HUMAN_PK),
         (
             "tampered content (id stale)",
             {**VALID_EVENT, "content": '{"scopes":["admin"],"expiration":1800000000}'},
             HUMAN_PK,
-            False,
         ),
         (
             "wrong author pubkey",
             VALID_EVENT,
             "1111111111111111111111111111111111111111111111111111111111111111",
-            False,
         ),
         (
             "zeroed signature",
             {**VALID_EVENT, "sig": "0" * 128},
             HUMAN_PK,
-            False,
         ),
     ],
 )
-def test_coincurve_vs_python_differential(label, event, pubkey, expected):
+def test_coincurve_vs_python_differential(label, event, pubkey):
     """Asserts that coincurve PublicKeyXOnly and _verify_schnorr_python agree on every case.
 
-    Both verifiers are called directly on the same vector — neither goes through
-    verify_nostr_event_crypto's dispatch logic, so this is a genuine cross-check
-    even when coincurve is installed in the test environment.
+    Both verifiers are called directly on the same (sig, pubkey, event_id) triple.
+    This tests signature-level agreement only — id recomputation and author matching
+    are wrapper-level defenses tested by verify_nostr_event_crypto below.
     """
     try:
         from coincurve import PublicKeyXOnly
     except ImportError:
         pytest.skip("coincurve not installed")
 
-    # Compute the event_id used for signature input
     evt = event if isinstance(event, dict) else VALID_EVENT
     sig_hex = evt.get("sig", "")
     pk_hex = evt.get("pubkey", pubkey)
@@ -136,13 +132,44 @@ def test_coincurve_vs_python_differential(label, event, pubkey, expected):
     # Pure-Python path — directly invoked, bypasses coincurve dispatch
     python_result = _verify_schnorr_python(sig_hex, pk_hex, event_id_hex)
 
-    # Both verifiers must agree
+    # Both verifiers must agree — divergence here is a security-critical bug
     assert coincurve_result == python_result, (
         f"[{label}] coincurve={coincurve_result} but pure-Python={python_result} — "
-        "verifiers diverged on the same input. This is a security-critical disagreement."
+        "verifiers diverged on the same input."
     )
 
-    # And both should match the expected outcome
-    assert (
-        coincurve_result == expected
-    ), f"[{label}] expected={expected}, got={coincurve_result}"
+
+# ── End-to-end wrapper tests: id recomputation + author match + crypto ─────────
+
+
+@pytest.mark.parametrize(
+    "label,event,pubkey,expected",
+    [
+        ("valid event", VALID_EVENT, HUMAN_PK, True),
+        (
+            "tampered content (id stale, recomputation catches it)",
+            {**VALID_EVENT, "content": '{"scopes":["admin"],"expiration":1800000000}'},
+            HUMAN_PK,
+            False,
+        ),
+        (
+            "wrong author pubkey (author-match catches it)",
+            VALID_EVENT,
+            "1111111111111111111111111111111111111111111111111111111111111111",
+            False,
+        ),
+        (
+            "zeroed signature (crypto rejects it)",
+            {**VALID_EVENT, "sig": "0" * 128},
+            HUMAN_PK,
+            False,
+        ),
+    ],
+)
+def test_verify_nostr_event_end_to_end(label, event, pubkey, expected):
+    """Tests the full verify_nostr_event_crypto wrapper which applies all three
+    defense layers: author pubkey match, event id recomputation, and BIP-340
+    Schnorr signature verification.
+    """
+    result = verify_nostr_event_crypto(event, pubkey)
+    assert result == expected, f"[{label}] expected={expected}, got={result}"
