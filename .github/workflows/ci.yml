@@ -68,6 +68,21 @@ jobs:
           pip install -r hermes-agent/requirements.txt
           pip install pytest pytest-asyncio aiortc numpy cryptography av websockets fastapi pydantic
 
+      - name: Cache Piper Voice Model
+        id: cache-piper
+        uses: actions/cache@v4
+        with:
+          path: models/piper
+          key: piper-en_US-ryan-high-v1.0.0
+
+      - name: Download Piper Voice Model
+        if: steps.cache-piper.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p models/piper
+          BASE=https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/ryan/high
+          curl -Lsf -o models/piper/en_US-ryan-high.onnx      "$BASE/en_US-ryan-high.onnx"
+          curl -Lsf -o models/piper/en_US-ryan-high.onnx.json "$BASE/en_US-ryan-high.onnx.json"
+
       - name: Run Python Unit & Integration Tests
         env:
           PYTHONPATH: hermes-agent:hermes-agent/skills
