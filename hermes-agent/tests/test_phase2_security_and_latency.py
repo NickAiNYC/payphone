@@ -1,6 +1,13 @@
-import pytest, time, asyncio
+import pytest
+import time
+import json
+import hashlib
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
-from skills.voice_avatar.consent.manager import ConsentManager
+from skills.voice_avatar.consent.manager import (
+    ConsentManager,
+    verify_nostr_event_crypto,
+)
 from skills.voice_avatar.calls.webrtc_endpoint import HermesCallSession
 from skills.voice_avatar.voice.barge_in import BargeInCoordinator
 
@@ -23,3 +30,45 @@ async def test_barge_in_latency_under_150ms():
     await coordinator.on_vad_speech_start()
     latency_ms = (time.time() - start) * 1000
     assert latency_ms < 150.0
+
+
+@pytest.mark.asyncio
+async def test_relay_consent_signature_verification_and_forgery_rejection():
+    # Real test event signed with BIP-340 Schnorr signature
+    valid_event = {
+        "kind": 21005,
+        "created_at": 1700000000,
+        "tags": [["p", "agent_pubkey"]],
+        "content": '{"scopes":["mic"],"record":false,"server_processing_opt_in":false,"expiration":1800000000}',
+        "pubkey": "75d0e3c1fd7b4346f4c0b343fac81320c33625aebb602e662efc000e77300f55",
+        "id": "8e30354454ef67487d2d971b0620f5c95cb9615b405f61d344c9bf7c17a2aa51",
+        "sig": "08328fe94fb82f78f929cf33325099447d68f03515400ad16fc63b12950039508122a8b5f7224f56c3ede4a41709ac2a5ed1d5a7eefd73102afb7bd78504f5d8",
+    }
+    human_pk = "75d0e3c1fd7b4346f4c0b343fac81320c33625aebb602e662efc000e77300f55"
+
+    # 1. Valid event verifies True
+    assert verify_nostr_event_crypto(valid_event, human_pk) is True
+
+    # 2. Forged event content fails verification
+    forged_content_event = dict(valid_event)
+    forged_content_event["content"] = (
+        '{"scopes":["mic"],"record":true,"server_processing_opt_in":true,"expiration":1800000000}'
+    )
+    assert verify_nostr_event_crypto(forged_content_event, human_pk) is False
+
+    # 3. Forged pubkey fails verification
+    forged_pubkey_event = dict(valid_event)
+    forged_pubkey_event["pubkey"] = (
+        "1111111111111111111111111111111111111111111111111111111111111111"
+    )
+    assert verify_nostr_event_crypto(forged_pubkey_event, human_pk) is False
+
+    # 4. ConsentManager rejecting forged events from mock relay
+    mock_nostr = AsyncMock()
+    mock_nostr.get_events.return_value = [forged_content_event]
+
+    manager = ConsentManager(nostr_client=mock_nostr)
+    grant = await manager.fetch_grant(human_pk, "agent_pubkey")
+
+    # Must fail closed (return None) when relay events fail cryptographic verification
+    assert grant is None

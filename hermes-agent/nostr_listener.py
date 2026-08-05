@@ -14,8 +14,11 @@ from voice_avatar.voice.pipeline import VoicePipeline, VoiceConfig
 from voice_avatar.consent.policy import RawMediaPolicy
 from voice_avatar.consent.manager import ConsentManager
 from voice_avatar.voice.llm.base import LLMProvider
+from secure_storage import HermesSecureStorage
 
 RELAY_URL = "ws://localhost:8080"
+storage = HermesSecureStorage()
+AGENT_PRIVKEY_HEX = storage.load_key()
 AGENT_PUBKEY = "agent_pubkey_mock_value"
 # Mock key for NIP-44 local-first decryption
 MOCK_SHARED_KEY = b"thirty_two_byte_mock_shared_key!"

@@ -8,6 +8,10 @@ from skills.voice_avatar.voice.pipeline import VoicePipeline, VoiceConfig
 from skills.voice_avatar.consent.policy import RawMediaPolicy
 from skills.voice_avatar.consent.manager import ConsentManager
 from skills.voice_avatar.voice.llm.base import LLMProvider
+from secure_storage import HermesSecureStorage
+
+storage = HermesSecureStorage()
+agent_key = storage.load_key()
 
 app = FastAPI()
 

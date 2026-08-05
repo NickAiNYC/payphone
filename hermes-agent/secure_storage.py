@@ -1,4 +1,5 @@
 import os
+import secrets
 import logging
 from pathlib import Path
 from cryptography.fernet import Fernet
@@ -15,6 +16,10 @@ class HermesSecureStorage:
         self.storage_path = Path(storage_path)
         master_key = os.environ.get("AGENT_MASTER_KEY")
         if not master_key:
+            if os.environ.get("ENVIRONMENT") == "production":
+                raise RuntimeError(
+                    "AGENT_MASTER_KEY environment variable is required in production environment"
+                )
             # Generate or reuse local key for development
             key_file = Path("./keys/.master_key")
             key_file.parent.mkdir(parents=True, exist_ok=True)
@@ -44,10 +49,7 @@ class HermesSecureStorage:
             encrypted = self.storage_path.read_bytes()
             return self.fernet.decrypt(encrypted).decode("utf-8")
         else:
-            # Generate new key hex if absent
-            import secrets
-
             secret_hex = secrets.token_hex(32)
             self.save_key(secret_hex)
-            logger.info(f"[SecureStorage] Generated new encrypted agent key at rest.")
+            logger.info("[SecureStorage] Generated new encrypted agent key at rest.")
             return secret_hex
