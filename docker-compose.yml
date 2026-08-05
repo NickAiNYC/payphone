@@ -1,0 +1,115 @@
+services:
+  # 1. Decentralized Nostr Control Plane Relay
+  nostr-relay:
+    image: scsibug/strfry:latest
+    container_name: nostr-relay
+    ports:
+      - "8080:8080"
+    volumes:
+      - strfry-data:/app/strfry-db
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "8080"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # 2. LiveKit SFU (Multi-Party Media Plane)
+  livekit-sfu:
+    image: livekit/livekit:latest
+    container_name: livekit-sfu
+    command: --config /livekit.yaml
+    ports:
+      - "7880:7880"
+      - "7881:7881"
+      - "7882:7882/udp"
+    environment:
+      - LIVEKIT_KEYS=${LIVEKIT_API_KEY:-devkey}:${LIVEKIT_API_SECRET:-secret}
+    volumes:
+      - ./livekit.yaml:/livekit.yaml
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "7880"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # 3. coturn TURN Server (NAT Traversal for WebRTC)
+  turn-server:
+    image: coturn/coturn:latest
+    container_name: turn-server
+    ports:
+      - "3478:3478"
+      - "3478:3478/udp"
+    command:
+      - -n
+      - --lt-cred-mech
+      - --fingerprint
+      - --no-multicast-peers
+      - --no-cli
+      - --static-auth-secret=${COTURN_SECRET:-coturnsecret}
+      - --realm=${COTURN_REALM:-localhost}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "3478"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # 4. Hermes Agent (Python Cognitive Brain)
+  hermes-agent:
+    build:
+      context: ./hermes-agent
+      dockerfile: Dockerfile
+    container_name: hermes-agent
+    ports:
+      - "8000:8000"
+    depends_on:
+      nostr-relay:
+        condition: service_healthy
+      livekit-sfu:
+        condition: service_healthy
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GLM_API_KEY=${GLM_API_KEY}
+      - RELAY_URL=ws://nostr-relay:8080
+      - LIVEKIT_URL=ws://livekit-sfu:7880
+      - LIVEKIT_API_KEY=${LIVEKIT_API_KEY:-devkey}
+      - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:-secret}
+      - HF_HOME=/app/models/huggingface
+      - PIPER_CACHE=/app/models/piper
+    volumes:
+      - ${MODEL_CACHE_DIR:-./models}:/app/models
+      - ${PERSISTENT_MEMORY_DIR:-./memory}:/app/memory
+      - ${AGENT_KEYSTORE_DIR:-./keys}:/app/keys
+      - ./hermes-agent:/app # Mount source for live reload development
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import socket; s = socket.socket(); s.connect(('localhost', 8000))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # 5. Buzz Client (Nginx Static Server)
+  buzz-client:
+    build:
+      context: ./buzz
+      dockerfile: Dockerfile
+    container_name: buzz-client
+    ports:
+      - "3000:80"
+    depends_on:
+      hermes-agent:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  strfry-data:

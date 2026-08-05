@@ -1,0 +1,15 @@
+faster-whisper
+piper-tts
+numpy
+fastapi
+uvicorn
+aiortc
+openai
+livekit
+websockets
+av
+cryptography
+pydantic
+pytest
+pytest-asyncio
+

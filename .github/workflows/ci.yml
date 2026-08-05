@@ -1,0 +1,106 @@
+name: Continuous Integration & Verification
+
+on:
+  push:
+    branches: [ main, dev ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  # 1. Lint and Static Typing Checks
+  static-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install Python Linters
+        run: |
+          pip install flake8 black typing-extensions
+
+      - name: Run Python Lint
+        run: |
+          flake8 hermes-agent/ --count --select=E9,F63,F7,F82 --show-source --statistics
+          black --check hermes-agent/
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: buzz/package-lock.json
+
+      - name: Install Frontend Dependencies
+        run: |
+          cd buzz
+          npm install
+
+      - name: Run TypeScript Verification
+        run: |
+          cd buzz
+          npm run build
+
+  # 2. Continuous Testing
+  unit-and-integration-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg espeak-ng libasound2-dev
+
+      - name: Install Python Package Dependencies
+        run: |
+          pip install -r hermes-agent/requirements.txt
+          pip install pytest pytest-asyncio aiortc numpy cryptography av websockets fastapi pydantic
+
+      - name: Run Python Unit & Integration Tests
+        env:
+          PYTHONPATH: hermes-agent:hermes-agent/skills
+        run: |
+          python3 hermes-agent/test_cognitive_loop.py
+          pytest hermes-agent/tests/ -v
+
+  # 3. Docker Image Verification
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Agent Container
+        uses: docker/build-push-action@v6
+        with:
+          context: ./hermes-agent
+          file: ./hermes-agent/Dockerfile
+          push: false
+          tags: hermes-agent:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build Buzz Client Container
+        uses: docker/build-push-action@v6
+        with:
+          context: ./buzz
+          file: ./buzz/Dockerfile
+          push: false
+          tags: buzz-client:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

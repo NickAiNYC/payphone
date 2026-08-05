@@ -1,0 +1,25 @@
+# Frontend / Web dependencies & build output
+node_modules/
+dist/
+.vite/
+
+# Python artifacts & environment
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Binary models & data directories
+*.onnx
+models/
+keys/
+memory/
+
+# Environment configuration
+.env
+.env.local
