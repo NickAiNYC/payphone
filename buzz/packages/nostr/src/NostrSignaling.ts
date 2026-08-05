@@ -1,5 +1,6 @@
 import { generateSecretKey, getPublicKey, finalizeEvent } from 'nostr-tools/pure';
 import { nip44 } from 'nostr-tools';
+import { finalizeEvent as finalize } from 'nostr-tools/pure';
 
 // NIP-07 Browser Extension interface
 export interface WindowNostr {
@@ -9,29 +10,6 @@ export interface WindowNostr {
     encrypt(peerPubkey: string, plaintext: string): Promise<string>;
     decrypt(peerPubkey: string, ciphertext: string): Promise<string>;
   };
-}
-
-// High-compatibility NIP-44/17 Cryptographer fallback to support developer mock pubkeys
-class FallbackCryptographer {
-  static encrypt(plaintext: string): string {
-    const bytes = new TextEncoder().encode(plaintext);
-    const nonce = new Uint8Array(12);
-    crypto.getRandomValues(nonce);
-    const merged = new Uint8Array(nonce.length + bytes.length);
-    merged.set(nonce);
-    merged.set(bytes, nonce.length);
-    return btoa(String.fromCharCode(...merged));
-  }
-
-  static decrypt(ciphertextB64: string): string {
-    const binary = atob(ciphertextB64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) {
-      bytes[i] = binary.charCodeAt(i);
-    }
-    const payloadBytes = bytes.slice(12);
-    return new TextDecoder().decode(payloadBytes);
-  }
 }
 
 export class NostrSignaling {
@@ -84,20 +62,14 @@ export class NostrSignaling {
         if (msg[0] === "EVENT") {
           const giftWrap = msg[2];
           if (giftWrap.kind === 13) {
-            let decryptedSeal: string;
-            if (this.nip07?.nip44 && giftWrap.pubkey) {
-              try {
-                decryptedSeal = await this.nip07.nip44.decrypt(giftWrap.pubkey, giftWrap.content);
-              } catch {
-                decryptedSeal = FallbackCryptographer.decrypt(giftWrap.content);
-              }
-            } else {
-              decryptedSeal = FallbackCryptographer.decrypt(giftWrap.content);
-            }
-
-            const seal = JSON.parse(decryptedSeal);
-            const decryptedRumor = FallbackCryptographer.decrypt(seal.content);
-            const rumor = JSON.parse(decryptedRumor);
+            // Outer layer is from the wrap's throwaway key, inner from the
+            // real sender's. A bad MAC throws and the event is discarded.
+            const seal = JSON.parse(
+              await this.decryptFrom(giftWrap.pubkey, giftWrap.content)
+            );
+            const rumor = JSON.parse(
+              await this.decryptFrom(seal.pubkey, seal.content)
+            );
             
             if (rumor.kind === 21001) {
               const content = JSON.parse(rumor.content);
@@ -116,63 +88,58 @@ export class NostrSignaling {
     };
   }
 
-  private async wrapInGift(rumor: any): Promise<any> {
-    if (this.nip07) {
-      try {
-        let encryptedRumor: string;
-        if (this.nip07.nip44) {
-          encryptedRumor = await this.nip07.nip44.encrypt(this.agentPubkey, JSON.stringify(rumor));
-        } else {
-          encryptedRumor = FallbackCryptographer.encrypt(JSON.stringify(rumor));
-        }
-
-        const sealTemplate = {
-          kind: 14,
-          created_at: Math.floor(Date.now() / 1000),
-          tags: [],
-          content: encryptedRumor
-        };
-
-        const signedSeal = await this.nip07.signEvent(sealTemplate);
-        const throwawayPriv = generateSecretKey();
-        const throwawayChatKey = nip44.getConversationKey(throwawayPriv, this.agentPubkey);
-        const encryptedSeal = nip44.encrypt(JSON.stringify(signedSeal), throwawayChatKey);
-
-        const giftWrapTemplate = {
-          kind: 13,
-          created_at: Math.floor(Date.now() / 1000),
-          tags: [["p", this.agentPubkey]],
-          content: encryptedSeal
-        };
-        return finalizeEvent(giftWrapTemplate, throwawayPriv);
-      } catch (err) {
-        console.warn("[Nostr] NIP-07 signing failed, falling back to ephemeral key:", err);
-      }
+  /** NIP-44 encrypt to `peerPubkey`. Uses the NIP-07 extension when it exposes
+   *  nip44 (so the key never leaves it), otherwise our own key via nostr-tools.
+   *  There is no unencrypted path — the previous fallback was base64. */
+  private async encryptTo(peerPubkey: string, plaintext: string): Promise<string> {
+    if (this.nip07?.nip44) {
+      return this.nip07.nip44.encrypt(peerPubkey, plaintext);
     }
+    if (!this.privKey) {
+      throw new Error("[Nostr] no key available to encrypt with");
+    }
+    return nip44.encrypt(plaintext, nip44.getConversationKey(this.privKey, peerPubkey));
+  }
 
-    // Ephemeral fallback path
-    const fallbackPriv = this.privKey || generateSecretKey();
-    const encryptedRumor = FallbackCryptographer.encrypt(JSON.stringify(rumor));
-    
+  /** Decrypt a payload authored by `peerPubkey`. Throws on a bad MAC. */
+  private async decryptFrom(peerPubkey: string, ciphertext: string): Promise<string> {
+    if (this.nip07?.nip44) {
+      return this.nip07.nip44.decrypt(peerPubkey, ciphertext);
+    }
+    if (!this.privKey) {
+      throw new Error("[Nostr] no key available to decrypt with");
+    }
+    return nip44.decrypt(ciphertext, nip44.getConversationKey(this.privKey, peerPubkey));
+  }
+
+  private async wrapInGift(rumor: any): Promise<any> {
+    // Seal: the rumor encrypted to the agent, signed by us so the agent can
+    // prove who sent it.
     const sealTemplate = {
       kind: 14,
       created_at: Math.floor(Date.now() / 1000),
       tags: [],
-      content: encryptedRumor
+      content: await this.encryptTo(this.agentPubkey, JSON.stringify(rumor)),
     };
-    const seal = finalizeEvent(sealTemplate, fallbackPriv);
-    
+
+    const signedSeal = this.nip07
+      ? await this.nip07.signEvent(sealTemplate)
+      : finalize(sealTemplate, this.privKey!);
+
+    // Gift wrap: the seal encrypted and signed under a throwaway key, so the
+    // relay cannot correlate sender and recipient across events.
     const throwawayPriv = generateSecretKey();
-    const encryptedSeal = FallbackCryptographer.encrypt(JSON.stringify(seal));
-    
-    const giftWrapTemplate = {
-      kind: 13,
-      created_at: Math.floor(Date.now() / 1000),
-      tags: [["p", this.agentPubkey]],
-      content: encryptedSeal
-    };
-    
-    return finalizeEvent(giftWrapTemplate, throwawayPriv);
+    const wrapKey = nip44.getConversationKey(throwawayPriv, this.agentPubkey);
+
+    return finalizeEvent(
+      {
+        kind: 13,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [["p", this.agentPubkey]],
+        content: nip44.encrypt(JSON.stringify(signedSeal), wrapKey),
+      },
+      throwawayPriv
+    );
   }
 
   async sendOffer(sdp: string): Promise<void> {

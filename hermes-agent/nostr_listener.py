@@ -3,8 +3,18 @@ import json
 import websockets
 import os
 import sys
-import base64
-from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
+import hashlib
+import time
+
+from coincurve import PrivateKey
+
+from nip44 import (
+    decrypt as nip44_decrypt,
+    encrypt as nip44_encrypt,
+    generate_privkey,
+    get_conversation_key,
+    pubkey_from_privkey,
+)
 
 # Ensure skills is in path
 sys.path.append(os.path.join(os.path.dirname(__file__), "skills"))
@@ -17,37 +27,54 @@ from voice_avatar.voice.llm.base import LLMProvider
 from secure_storage import HermesSecureStorage
 from ice_credentials import ice_servers
 
-RELAY_URL = "ws://localhost:8080"
+RELAY_URL = os.environ.get("RELAY_URL", "ws://localhost:8080")
 storage = HermesSecureStorage()
 AGENT_PRIVKEY_HEX = storage.load_key()
-AGENT_PUBKEY = "agent_pubkey_mock_value"
-# Mock key for NIP-44 local-first decryption
-MOCK_SHARED_KEY = b"thirty_two_byte_mock_shared_key!"
+# Derived from the stored key, not a placeholder string — ECDH needs a real
+# public key, and callers address the agent by it.
+AGENT_PUBKEY = pubkey_from_privkey(AGENT_PRIVKEY_HEX)
 
 # In-memory active session store
 active_sessions = {}
 
 
-def decrypt_payload(ciphertext_b64: str) -> str:
-    try:
-        # NIP-44 Decryption using mock shared key
-        data = base64.b64decode(ciphertext_b64)
-        nonce = data[:12]
-        ciphertext = data[12:]
-        chacha = ChaCha20Poly1305(MOCK_SHARED_KEY)
-        decrypted = chacha.decrypt(nonce, ciphertext, None)
-        return decrypted.decode("utf-8")
-    except Exception:
-        # Fallback to plain text if not encrypted/malformed for local testing
-        return ciphertext_b64
+def decrypt_from(peer_pubkey: str, ciphertext: str) -> str:
+    """Decrypt a NIP-44 payload sent to this agent by `peer_pubkey`.
+
+    Raises on a bad MAC. There is deliberately no plaintext fallback: the
+    previous implementation returned the ciphertext unchanged on failure, which
+    silently accepted unencrypted input.
+    """
+    key = get_conversation_key(AGENT_PRIVKEY_HEX, peer_pubkey)
+    return nip44_decrypt(ciphertext, key)
 
 
-def encrypt_payload(plaintext: str) -> str:
-    # NIP-44 Encryption using mock shared key
-    nonce = os.urandom(12)
-    chacha = ChaCha20Poly1305(MOCK_SHARED_KEY)
-    ciphertext = chacha.encrypt(nonce, plaintext.encode("utf-8"), None)
-    return base64.b64encode(nonce + ciphertext).decode("utf-8")
+def encrypt_to(peer_pubkey: str, plaintext: str, privkey: str = None) -> str:
+    key = get_conversation_key(privkey or AGENT_PRIVKEY_HEX, peer_pubkey)
+    return nip44_encrypt(plaintext, key)
+
+
+def finalize_event(privkey_hex: str, kind: int, tags: list, content: str) -> dict:
+    """Compute the NIP-01 event id and sign it. An event with a placeholder
+    signature is rejected by any relay that validates, which is all of them."""
+    priv = PrivateKey(bytes.fromhex(privkey_hex))
+    pubkey = priv.public_key_xonly.format().hex()
+    created_at = int(time.time())
+    canonical = json.dumps(
+        [0, pubkey, created_at, kind, tags, content],
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    event_id = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return {
+        "id": event_id,
+        "pubkey": pubkey,
+        "created_at": created_at,
+        "kind": kind,
+        "tags": tags,
+        "content": content,
+        "sig": priv.sign_schnorr(bytes.fromhex(event_id)).hex(),
+    }
 
 
 async def publish_event(websocket, kind, target_pubkey, content):
@@ -55,31 +82,31 @@ async def publish_event(websocket, kind, target_pubkey, content):
     rumor = {
         "kind": kind,
         "pubkey": AGENT_PUBKEY,
-        "created_at": int(asyncio.get_event_loop().time()),
+        "created_at": int(time.time()),
         "tags": [["p", target_pubkey]],
         "content": json.dumps(content),
     }
 
-    # 2. Encrypt Rumor into Seal
-    encrypted_rumor = encrypt_payload(json.dumps(rumor))
-    seal = {
-        "kind": 14,
-        "created_at": int(asyncio.get_event_loop().time()),
-        "tags": [],
-        "content": encrypted_rumor,
-    }
+    # 2. Seal: rumor encrypted to the recipient, signed by the agent so the
+    #    recipient can prove who actually sent it.
+    seal = finalize_event(
+        AGENT_PRIVKEY_HEX,
+        14,
+        [],
+        encrypt_to(target_pubkey, json.dumps(rumor)),
+    )
 
-    # 3. Encrypt Seal into Gift Wrap (Kind 13)
-    encrypted_seal = encrypt_payload(json.dumps(seal))
-    gift_wrap = {
-        "id": "mock_event_id_" + os.urandom(8).hex(),
-        "pubkey": "throwaway_agent_pubkey",
-        "created_at": int(asyncio.get_event_loop().time()),
-        "kind": 13,
-        "tags": [["p", target_pubkey]],
-        "content": encrypted_seal,
-        "sig": "mock_signature",
-    }
+    # 3. Gift wrap: seal encrypted and signed under a throwaway key, so the
+    #    relay cannot correlate sender and recipient across events. The wrap
+    #    carries the throwaway's real pubkey — the recipient derives the
+    #    conversation key from it.
+    wrap_priv = generate_privkey()
+    gift_wrap = finalize_event(
+        wrap_priv,
+        13,
+        [["p", target_pubkey]],
+        encrypt_to(target_pubkey, json.dumps(seal), privkey=wrap_priv),
+    )
     await websocket.send(json.dumps(["EVENT", gift_wrap]))
 
 
@@ -162,15 +189,19 @@ async def main():
                     if msg[0] == "EVENT":
                         gift_wrap = msg[2]
 
-                        # Decrypt NIP-17 Seal from Gift Wrap content
-                        decrypted_seal = decrypt_payload(gift_wrap["content"])
-                        seal = json.loads(decrypted_seal)
+                        # Outer layer is encrypted from the wrap's
+                        # throwaway key; inner from the real sender's.
+                        seal = json.loads(
+                            decrypt_from(gift_wrap["pubkey"], gift_wrap["content"])
+                        )
 
-                        # Decrypt Rumor from Seal content
-                        decrypted_rumor = decrypt_payload(seal["content"])
-                        rumor = json.loads(decrypted_rumor)
+                        rumor = json.loads(
+                            decrypt_from(seal["pubkey"], seal["content"])
+                        )
 
-                        user_pubkey = rumor.get("pubkey")
+                        # Trust the signed seal's author over the unsigned
+                        # rumor's self-declared pubkey.
+                        user_pubkey = seal["pubkey"]
                         payload = json.loads(rumor["content"])
 
                         if rumor["kind"] == 21001:
