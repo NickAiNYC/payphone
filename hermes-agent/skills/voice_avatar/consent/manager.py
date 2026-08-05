@@ -186,6 +186,22 @@ class ConsentManager:
         self.agent_keys = agent_keys
         self._cache = {}
 
+    def revoke(self, human_pubkey: str, agent_pubkey: str) -> bool:
+        """Drop a cached grant so the next check re-reads from the relay.
+
+        Without this a revoked grant stayed live until its own expiration —
+        up to 24 hours — while the consent sheet promised revocation "at any
+        time". Returns True if a cached grant was actually dropped.
+        """
+        return self._cache.pop((human_pubkey, agent_pubkey), None) is not None
+
+    def revoke_all(self, human_pubkey: str) -> int:
+        """Drop every cached grant this human has issued, to any agent."""
+        keys = [k for k in self._cache if k[0] == human_pubkey]
+        for k in keys:
+            del self._cache[k]
+        return len(keys)
+
     async def check(
         self, human_pubkey: str, agent_pubkey: str, required_scopes: List[str]
     ) -> bool:
@@ -208,8 +224,12 @@ class ConsentManager:
     ) -> Optional[ConsentGrant]:
         """Fetch kind 21005 cryptographic consent grant from Nostr relay with strict signature validation."""
         if self.nostr:
-            if human_pubkey in self._cache:
-                cached = self._cache[human_pubkey]
+            # Keyed by both parties. Keying by the human alone let a second
+            # agent inherit the first agent's grant — a cross-agent privilege
+            # escalation in the component whose job is preventing exactly that.
+            cache_key = (human_pubkey, agent_pubkey)
+            if cache_key in self._cache:
+                cached = self._cache[cache_key]
                 if cached.expiration > int(time.time()):
                     return cached
 
@@ -312,7 +332,7 @@ class ConsentManager:
                         )
 
                 if valid_grant:
-                    self._cache[human_pubkey] = valid_grant
+                    self._cache[(human_pubkey, agent_pubkey)] = valid_grant
                     return valid_grant
 
                 # Fail closed if nostr client is active and no verified grant is found on relay

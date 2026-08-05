@@ -78,7 +78,8 @@ This separation is what makes the system modular, secure, and future-proof.
      Verified byte-compatible with `nostr-tools` in both directions
      ([`tests/test_nip44.py`](hermes-agent/tests/test_nip44.py)).
    * Call recordings are off by default. *(The client-side encrypted recorder is implemented but not yet wired to the UI.)*
-   * Cryptographic consent model (`kind 21005`) scoped per agent (local-first grant fallback for offline dev, fail-closed evaluation when relay client is attached).
+   * Cryptographic consent model (`kind 21005`) scoped per `(human, agent)` pair,
+     with immediate revocation (local-first grant fallback for offline dev, fail-closed evaluation when relay client is attached).
    * Local-first defaults: `faster-whisper` + `Piper` + `Silero` + local `GLM-5.2`.
 
 3. **Multi-Party Huddles**
@@ -126,6 +127,13 @@ Deploy the entire workspace (Strfry Nostr Relay, LiveKit SFU, coturn TURN Server
    Open **[http://localhost:3000/](http://localhost:3000/)** in your browser.
 
 ---
+
+## Security
+
+Current posture — what is implemented and verified, what is intentionally
+unsupported, and the known limitations — is tracked in
+[docs/security-status.md](docs/security-status.md). That file is authoritative;
+if anything here contradicts it, this page is wrong.
 
 ## Development & Architecture Deep Dive
 

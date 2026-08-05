@@ -1,6 +1,7 @@
 import os
+import secrets
 import uuid
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from skills.voice_avatar.calls.webrtc_endpoint import HermesCallSession
@@ -16,10 +17,35 @@ agent_key = storage.load_key()
 
 app = FastAPI()
 
+# Deployment gate for the endpoints that mint TURN credentials and spend
+# inference budget. Set PAYPHONE_API_KEY and callers must present it.
+#
+# What this stops: drive-by abuse from anyone who can reach the port —
+# /api/ice hands out working TURN credentials, so an open instance is a free
+# relay someone else pays for, and /api/call/offer spends your LLM budget.
+#
+# What this does NOT do: authenticate a user. A browser client has to carry
+# the key in its bundle, where any user of the app can read it. Per-user
+# authentication belongs on the Nostr path, where the caller already proves
+# key ownership by signing. Do not mistake this for more than a gate.
+API_KEY = os.environ.get("PAYPHONE_API_KEY", "").strip()
+
+
+async def require_api_key(x_api_key: str = Header(default="")) -> None:
+    if not API_KEY:
+        # Unset means local development. Say so loudly once rather than
+        # failing closed and making the demo look broken.
+        return
+    if not secrets.compare_digest(x_api_key, API_KEY):
+        raise HTTPException(status_code=401, detail="invalid or missing X-API-Key")
+
+
 # Enable CORS for the React app
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins for local-first testing simplicity
+    allow_origins=[
+        o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "*").split(",")
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -34,7 +60,7 @@ class OfferPayload(BaseModel):
     type: str
 
 
-@app.post("/api/call/offer")
+@app.post("/api/call/offer", dependencies=[Depends(require_api_key)])
 async def call_offer(payload: OfferPayload):
     try:
         call_id = str(uuid.uuid4())
@@ -102,7 +128,7 @@ async def call_offer(payload: OfferPayload):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/ice")
+@app.get("/api/ice", dependencies=[Depends(require_api_key)])
 async def get_ice_servers():
     """Short-lived TURN credentials for the browser.
 
@@ -112,7 +138,7 @@ async def get_ice_servers():
     return {"ice_servers": ice_servers()}
 
 
-@app.post("/api/call/hangup/{call_id}")
+@app.post("/api/call/hangup/{call_id}", dependencies=[Depends(require_api_key)])
 async def call_hangup(call_id: str):
     session_data = active_sessions.pop(call_id, None)
     if not session_data:

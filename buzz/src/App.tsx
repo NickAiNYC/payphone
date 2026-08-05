@@ -221,7 +221,13 @@ const App: React.FC = () => {
   const fetchIceServers = async (): Promise<RTCIceServer[]> => {
     const fallback: RTCIceServer[] = [{ urls: "stun:stun.l.google.com:19302" }];
     try {
-      const res = await fetch("/api/ice", { cache: "no-store" });
+      // Present only when configured. A key in a browser bundle is not a
+      // secret — it gates the deployment, not the user. See api_server.py.
+      const apiKey = (import.meta as any).env?.VITE_PAYPHONE_API_KEY;
+      const res = await fetch("/api/ice", {
+        cache: "no-store",
+        headers: apiKey ? { "X-API-Key": apiKey } : {},
+      });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       const servers: RTCIceServer[] = data?.ice_servers ?? [];
@@ -483,15 +489,15 @@ const App: React.FC = () => {
                       : profile?.about?.trim() || "Agent · local-first"}
                   </p>
                   <div className="pubkey">
-                    {profile?.nip05 ? (
-                      <>
-                        <b>✓</b> {profile.nip05}
-                      </>
-                    ) : (
-                      <>
-                        <b>●</b> {agentPubkey.slice(0, 8)}…{agentPubkey.slice(-4)}
-                      </>
-                    )}
+                    {/* No checkmark. A NIP-05 identifier is a self-declared
+                        claim until /.well-known/nostr.json has been fetched and
+                        matched against this pubkey, and we do not do that yet —
+                        rendering a ✓ would let any agent claim any handle.
+                        Shown as plain text, same weight as the raw key. */}
+                    <b>●</b>{" "}
+                    {profile?.nip05
+                      ? profile.nip05
+                      : `${agentPubkey.slice(0, 8)}…${agentPubkey.slice(-4)}`}
                   </div>
                 </div>
               </div>

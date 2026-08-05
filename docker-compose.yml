@@ -85,6 +85,8 @@ services:
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:-secret}
       # TURN: the agent mints short-lived REST credentials against this secret.
       # TURN_HOST must be an address the *phone* can reach, not "localhost".
+      - PAYPHONE_API_KEY=${PAYPHONE_API_KEY:-}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-*}
       - COTURN_SECRET=${COTURN_SECRET:-coturnsecret}
       - TURN_HOST=${TURN_HOST:-}
       - TURN_PORT=${TURN_PORT:-3478}
