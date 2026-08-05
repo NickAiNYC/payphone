@@ -98,6 +98,38 @@ def _verify_schnorr_python(sig_hex: str, pubkey_hex: str, event_id: str) -> bool
         return False
 
 
+def verify_schnorr(sig_hex: str, pubkey_hex: str, msg_hex: str) -> bool:
+    """Verify a BIP-340 signature over a 32-byte message.
+
+    Single entry point for every Schnorr check in the agent — consent events and
+    VoIP ring payloads both land here, so there is one implementation to audit
+    and one to keep in agreement with the pure-Python fallback.
+
+    Uses coincurve (libsecp256k1, ~19 µs) when installed and falls back to the
+    zero-dependency implementation otherwise. A non-ImportError failure falls
+    through to the fallback rather than returning True, so a malformed input is
+    re-checked and properly rejected.
+    """
+    if len(sig_hex) != 128 or len(pubkey_hex) != 64 or len(msg_hex) != 64:
+        logger.warning("[ConsentManager] Malformed signature, pubkey or message length")
+        return False
+
+    try:
+        from coincurve import PublicKeyXOnly
+
+        return bool(
+            PublicKeyXOnly(bytes.fromhex(pubkey_hex)).verify(
+                bytes.fromhex(sig_hex), bytes.fromhex(msg_hex)
+            )
+        )
+    except ImportError:
+        pass
+    except Exception as fast_err:
+        logger.debug(f"[ConsentManager] coincurve verification error: {fast_err}")
+
+    return _verify_schnorr_python(sig_hex, pubkey_hex, msg_hex)
+
+
 def verify_nostr_event_crypto(event: dict, expected_pubkey: str) -> bool:
     """Strictly verifies a Nostr event:
     1. Enforces event.pubkey == expected_pubkey.
@@ -133,32 +165,7 @@ def verify_nostr_event_crypto(event: dict, expected_pubkey: str) -> bool:
             )
             return False
 
-        sig_hex = event.get("sig", "")
-        if len(sig_hex) != 128 or len(pubkey_hex) != 64:
-            logger.warning("[ConsentManager] Malformed signature or pubkey byte length")
-            return False
-
-        # Fast-path via coincurve (libsecp256k1) if installed (~30 µs per event)
-        try:
-            from coincurve import PublicKeyXOnly
-
-            sig_bytes = bytes.fromhex(sig_hex)
-            msg_bytes = bytes.fromhex(event_id)
-            pub_bytes = bytes.fromhex(pubkey_hex)
-            if PublicKeyXOnly(pub_bytes).verify(sig_bytes, msg_bytes):
-                return True
-            else:
-                logger.warning(
-                    "[ConsentManager] coincurve Schnorr signature verification failed"
-                )
-                return False
-        except ImportError:
-            pass
-        except Exception as fast_err:
-            logger.debug(f"[ConsentManager] coincurve verification error: {fast_err}")
-
-        # Pure-Python fallback (zero dependencies)
-        return _verify_schnorr_python(sig_hex, pubkey_hex, event_id)
+        return verify_schnorr(event.get("sig", ""), pubkey_hex, event_id)
 
     except Exception as exc:
         logger.error(f"[ConsentManager] Exception verifying event signature: {exc}")
