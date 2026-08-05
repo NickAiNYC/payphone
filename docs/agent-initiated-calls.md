@@ -255,15 +255,44 @@ agent                     relay / APNs                    device
   ╰─ on end: SkillRefiner + summariser ◄─────────────────────╯
 ```
 
-### Audio must not wait for context
+### Audio must not wait for context — but the greeting must
 
-The single most important rule in the sequence above: **join the room and open
-audio immediately on answer; resolve pointers concurrently.** A user who swipes
-to answer and hears two seconds of silence has already had a bad call.
+Two rules that look contradictory and are not.
 
-The agent starts from `reason`, which it already has, and the richer context
-lands underneath while it is talking. If resolution fails entirely, the call
-degrades to a normal conversation rather than failing.
+**Never block the media path.** A user who swipes to answer and hears two
+seconds of silence has already had a bad call.
+
+**Never let the model guess whether it remembers.** Opening audio while
+resolution is still in flight means the first sentence is written against an
+unknown state. If it assumes continuity and resolution then fails, the agent
+stammers or confabulates — worse than admitting it has no context.
+
+Resolution therefore starts **while the phone is still ringing**, not on answer.
+There are several seconds of dead time during the ring and spending them is
+free; by the time anyone picks up the answer is usually already there. The
+deadline gates the *first utterance*, not the audio.
+
+The model is never handed `{"memory": null}` and left to interpret it. It is
+told which mode it is in:
+
+```jsonc
+{"session_mode": "continuation", "context_status": "ready",
+ "resolved_count": 3, "context": [ … ]}
+
+{"session_mode": "fresh_start", "context_status": "unavailable",
+ "reason": "timeout", "unresolved_count": 2}
+```
+
+A greeting written against `fresh_start` — *"Hey Nick, my long-term memory is
+not syncing, let's just take today's topic"* — is a perfectly good experience.
+A greeting that assumes continuity and discovers it has none is not.
+
+Partial resolution is its own state: `degraded` still means continuation, since
+some context beats none, but the model knows not to claim completeness.
+Everything denied is **not** an empty continuation — it is a fresh start, or an
+empty object list reads to the model as "nothing happened."
+
+Implemented in [`context_resolver.py`](../hermes-agent/context_resolver.py).
 
 ### Pointer types
 
@@ -285,6 +314,32 @@ outcome and can fall back to a notification or a written summary. A ring with no
 response inside `exp` is a missed call: the agent should not re-ring
 immediately, and repeated rings need a backoff the *user* controls, not the
 agent.
+
+### Not being annoying
+
+Every other check defends against an attacker. This one defends against the
+agent. An agent that sets its own interruption budget will get it wrong, and a
+single 3 a.m. ring about a passing CI failure costs more trust than a hundred
+well-timed calls earn.
+
+The human's preferences live in a kind 21006 event and are evaluated **before
+the intent is signed**, so a ring that should not happen is never minted:
+
+```jsonc
+{ "quiet_hours": {"start": "22:00", "end": "08:00", "tz": "America/New_York"},
+  "always_allow": ["security"], "never_allow": ["marketing"],
+  "min_priority": "normal" }
+```
+
+A blocked ring is *deferred*, not dropped — the agent still has something to
+say and should either wait for the window or use a quieter surface. The
+decision carries `defer_until` so the agent does not re-decide for itself.
+
+Absent any preference event, rings are allowed: reaching the human already
+required a `ring` grant, which fails closed on its own. This layer refines a
+permission that was granted rather than replacing the grant.
+
+Implemented in [`interruption_policy.py`](../hermes-agent/interruption_policy.py).
 
 ### Consent
 
