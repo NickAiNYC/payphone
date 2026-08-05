@@ -144,8 +144,9 @@ class ConsentGrant:
 
 
 class ConsentManager:
-    def __init__(self, nostr_client=None):
+    def __init__(self, nostr_client=None, agent_keys=None):
         self.nostr = nostr_client
+        self.agent_keys = agent_keys
         self._cache = {}
 
     async def check(
@@ -227,7 +228,31 @@ class ConsentManager:
                         continue
 
                     try:
-                        content = json.loads(evt_dict.get("content", "{}"))
+                        raw_content = evt_dict.get("content", "{}")
+                        if (
+                            self.agent_keys
+                            and raw_content
+                            and not raw_content.startswith("{")
+                        ):
+                            try:
+                                from nostr_sdk import nip44
+
+                                secret_key = (
+                                    self.agent_keys.secret_key()
+                                    if hasattr(self.agent_keys, "secret_key")
+                                    else self.agent_keys
+                                )
+                                raw_content = nip44.decrypt(
+                                    secret_key,
+                                    human_pubkey,
+                                    raw_content,
+                                )
+                            except Exception as decrypt_err:
+                                logger.debug(
+                                    f"[ConsentManager] NIP-44 decrypt skipped/failed: {decrypt_err}"
+                                )
+
+                        content = json.loads(raw_content)
                         exp = content.get("expiration", int(time.time()) + 86400)
                         ts = evt_dict.get("created_at", 0)
 
