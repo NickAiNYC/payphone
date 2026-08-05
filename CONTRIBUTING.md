@@ -1,12 +1,16 @@
-# Contributing to Hermes × Buzz
+# Contributing to payphone
 
-We welcome contributions to the Hermes × Buzz ecosystem! Follow this guide to configure your workspace, run checks, and submit code changes.
+We welcome contributions to the payphone ecosystem! Follow this guide to configure your workspace, run checks, and submit code changes.
 
 ---
 
 ## 1. Setting Up Your Development Environment
 
-1. Clone the repository.
+1. Clone the repository:
+   ```bash
+   git clone git@github.com:NickAiNYC/payphone.git
+   cd payphone
+   ```
 2. Initialize and configure local settings:
    ```bash
    cp .env.example .env
@@ -34,9 +38,10 @@ We require all checks to pass locally prior to submittal:
 
 ## 3. Code Standards & Style
 
-* **Python Backend**: Code must follow PEP 8 styling conventions. We enforce auto-formatting via `black`:
+* **Python Backend**: Code must follow PEP 8 styling conventions. We enforce auto-formatting via `black` and linting via `flake8`:
   ```bash
   black hermes-agent/
+  flake8 hermes-agent/ --select=E9,F63,F7,F82
   ```
 * **TypeScript Frontend**: Ensure components compile with no static typing warnings:
   ```bash
@@ -53,4 +58,4 @@ We require all checks to pass locally prior to submittal:
    * `fix: ...` for bug corrections.
    * `docs: ...` for documentation updates.
 3. Verify that your tests pass.
-4. Open a Pull Request targeting the `main` branch.
+4. Open a Pull Request targeting the `main` branch on `NickAiNYC/payphone`.

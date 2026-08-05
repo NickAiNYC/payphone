@@ -1,10 +1,10 @@
-# Hermes × Buzz Development & Operational Commands
+# payphone Development & Operational Commands
 .PHONY: dev build-all stop clean test test-cognitive logs help
 
 # Default help
 help:
-	@echo "Hermes × Buzz Developer Tooling"
-	@echo "==============================="
+	@echo "payphone Developer Tooling"
+	@echo "=========================="
 	@echo "make dev             - Boot the entire local development stack in the foreground"
 	@echo "make build-all       - Force build all containers"
 	@echo "make stop            - Stop and tear down all running services"

@@ -21,7 +21,7 @@ If you discover a vulnerability, especially regarding:
 * Flaws in private key custody (NIP-44 or local storage origins)
 * Decryption exploits on local call recordings
 
-Please email your report to **security@hermes-buzz-agent.example**.
+Please submit a report via [GitHub Private Vulnerability Reporting](https://github.com/NickAiNYC/payphone/security/advisories/new).
 
 ### Report Elements
 Please include:

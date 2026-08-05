@@ -1,6 +1,6 @@
-# Hermes × Buzz Developer Guide
+# payphone Developer Guide
 
-This document covers system architecture mappings, setup procedures, extensions guidelines, operations notes, and testing expectations for the Hermes × Buzz voice avatar ecosystem.
+This document covers system architecture mappings, setup procedures, extension guidelines, operations notes, and testing expectations for the payphone voice avatar ecosystem.
 
 ---
 
@@ -9,7 +9,7 @@ This document covers system architecture mappings, setup procedures, extensions 
 The project maps directly to the three architecture planes:
 
 ```
-hermes-buzz-voice-avatar/
+payphone/
 ├── docker-compose.yml           # Multi-service local & cloud orchestrator
 ├── Makefile                     # Hot-keys for bootstrapping and testing
 ├── buzz/                        # Media Renderer & Client Control App (React)
@@ -35,7 +35,7 @@ hermes-buzz-voice-avatar/
                 ├── pipeline.py  # Orchestrates STT -> LLM -> TTS stream
                 ├── vad.py       # Local Silero voice activity detection wrapper
                 ├── barge_in.py  # Interruption coordinator
-                ├── llm/         # GLM-5.2 streaming providers
+                ├── llm/         # Dynamic streaming LLM providers
                 ├── stt/         # STT provider adapters (Whisper, etc.)
                 └── tts/         # TTS provider adapters (Piper, etc.)
 ```
@@ -43,7 +43,7 @@ hermes-buzz-voice-avatar/
 ### Plane Alignment:
 1. **Control Plane (Signaling & Identity)**: Managed on the frontend by `nostr_signaling.ts` and on the backend by `nostr_listener.py` alongside the `consent` check modules.
 2. **Media Plane (Audio Streams & State Sync)**: Implemented via browser WebRTC APIs, `aiortc` (in `webrtc_endpoint.py`), the Canvas sprite renderer, and LiveKit.
-3. **Cognitive Plane (Core Brain & Loop)**: Implemented in `VoicePipeline` orchestrating Whisper STT, GLM-5.2 LLM, and Piper TTS, with self-improving proposing cycles inside the `self_improvement` directory.
+3. **Cognitive Plane (Core Brain & Loop)**: Implemented in `VoicePipeline` orchestrating Whisper STT, LLM streaming, and Piper TTS, with self-improving proposing cycles inside the `self_improvement` directory.
 
 ---
 
@@ -105,7 +105,7 @@ When defining custom behaviors, follow the architecture's existing kinds:
 To add a new event kind:
 1. Document the rumor payload structure in `DEVELOPING.md`.
 2. Add support to [nostr_signaling.ts](buzz/src/nostr_signaling.ts) and wrap in NIP-17 Gift-wraps.
-3. Parse the message kind inside [nostr_listener.py](hermes-agent/nostr_listener.py#L160-L168).
+3. Parse the message kind inside [nostr_listener.py](hermes-agent/nostr_listener.py).
 
 ---
 
@@ -126,8 +126,8 @@ To ensure calls route correctly through firewalls, configure host ports as follo
 Ensure host server firewalls allow TCP/UDP ingress on these ports.
 
 ### Privacy Safeguards
-* By default, audio tracks are only transcribed locally on the host via `faster-whisper`.
-* Cloud processing (such as GLM APIs or external STT services) requires checking consent values (`server_processing_opt_in = true`) through the `RawMediaPolicy` manager before initializing those adapters.
+* By default, audio tracks are transcribed locally on the host via `faster-whisper`.
+* Cloud processing requires checking consent values (`server_processing_opt_in = true`) through the `RawMediaPolicy` manager before initializing external adapters.
 
 ---
 
@@ -146,6 +146,9 @@ After every call, the `VoiceSelfImprover` analyzes the `InteractionTrace` (captu
 
 ## 7. PR Checklist & Code Style
 Before submitting a Pull Request, ensure:
+1. `flake8` and `black` static checks pass on `hermes-agent/`.
+2. Frontend builds cleanly via `npm run build` inside `buzz/`.
+3. Integration test suite passes via `make test`.
 
 ---
 
