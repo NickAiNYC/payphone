@@ -5,7 +5,7 @@
 [![Continuous Integration](https://github.com/NickAiNYC/payphone/actions/workflows/ci.yml/badge.svg)](https://github.com/NickAiNYC/payphone/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A production-grade, local-first, decentralized framework that turns LLM agents into fully interactive, embodied digital teammates. Enables direct 1:1 voice calls to agents, multi-participant SFU huddles, real-time viseme-based canvas lip-sync, and cryptographically private NIP-17 signaling without a central server.
+A local-first, decentralized framework that turns LLM agents into fully interactive, embodied digital teammates. Enables direct 1:1 voice calls to agents, multi-participant SFU huddles, real-time viseme-based canvas lip-sync, and cryptographically private NIP-17 signaling without a central server.
 
 ```mermaid
 flowchart LR
