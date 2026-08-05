@@ -431,3 +431,60 @@ body {
 @media (prefers-reduced-motion: reduce) {
   * { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
 }
+
+/* ─────────────  native shell  ─────────────
+   Launched from the Home Screen, or on a phone-sized screen: the real device is
+   the frame, so drop the drawn bezel, fill the viewport, and respect the safe
+   areas (notch, Dynamic Island cutout, home indicator). */
+
+.room.native { padding: 0; }
+
+.room.native .phone {
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  border-radius: 0;
+  padding: 0;
+  background: none;
+  box-shadow: none;
+  animation: none;
+}
+
+.room.native .screen {
+  border-radius: 0;
+  padding-top: env(safe-area-inset-top);
+  padding-bottom: env(safe-area-inset-bottom);
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+}
+
+/* The OS draws the real island; ours would collide with the cutout. Keep the
+   status pill but tuck it below the inset. */
+.room.native .island { top: calc(env(safe-area-inset-top) + 8px); }
+
+/* iOS draws its own home indicator over the app. */
+.room.native .home-indicator { display: none; }
+
+.room.native .dock { padding-bottom: max(26px, env(safe-area-inset-bottom)); }
+
+/* The ambient field is the background itself once the bezel is gone. */
+.room.native .aurora { width: 92vmin; height: 92vmin; opacity: 0.42; }
+
+/* Touch targets: 44pt minimum per Apple's HIG. */
+@media (pointer: coarse) {
+  .key { height: 68px; }
+  .call-row .key { height: 62px; }
+  .btn { height: 54px; }
+}
+
+/* profile picture from the agent's kind 0 metadata */
+.agent-photo {
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  object-fit: cover;
+  display: block;
+  margin: 0 auto 10px;
+  border: 0.5px solid var(--hairline);
+  box-shadow: 0 6px 18px -6px rgba(0, 0, 0, 0.8);
+}

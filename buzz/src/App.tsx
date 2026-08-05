@@ -5,6 +5,7 @@ import { AvatarStateMachine, AvatarState } from "@buzz/agent-avatars/src/AvatarS
 import { WebGLAvatarRenderer } from "@buzz/agent-avatars/src/renderers/WebGLAvatarRenderer";
 import { CanvasSpriteRenderer } from "@buzz/agent-avatars/src/renderers/CanvasSpriteRenderer";
 import { NostrSignaling } from "@buzz/nostr/src/NostrSignaling";
+import { fetchProfile, profileLabel, tintFromImage, NostrProfile } from "@buzz/nostr/src/profile";
 import { HuddlePanel } from "@buzz/huddle/src/HuddlePanel";
 import "./styles.css";
 
@@ -68,6 +69,38 @@ const Icon = {
   ),
 };
 
+/** Launched standalone from the Home Screen, or running on a phone-sized screen.
+ *  In either case the drawn device bezel is redundant — the real device is the frame. */
+function useNativeShell(): boolean {
+  const [native, setNative] = useState(false);
+  useEffect(() => {
+    const mq = window.matchMedia("(display-mode: standalone), (display-mode: fullscreen)");
+    const evaluate = () =>
+      setNative(
+        mq.matches ||
+          (window.navigator as any).standalone === true ||
+          window.matchMedia("(max-width: 520px)").matches
+      );
+    evaluate();
+    mq.addEventListener?.("change", evaluate);
+    window.addEventListener("resize", evaluate);
+    return () => {
+      mq.removeEventListener?.("change", evaluate);
+      window.removeEventListener("resize", evaluate);
+    };
+  }, []);
+  return native;
+}
+
+/** Relay endpoint: same-origin /nostr proxy in production, overridable for dev. */
+function relayUrl(): string {
+  const derived =
+    typeof window !== "undefined" && window.location?.host
+      ? `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/nostr`
+      : "ws://localhost:8080";
+  return (import.meta as any).env?.VITE_RELAY_URL || derived;
+}
+
 const App: React.FC = () => {
   const [needsConsent, setNeedsConsent] = useState(false);
   const [callActive, setCallActive] = useState(false);
@@ -79,6 +112,8 @@ const App: React.FC = () => {
   const [micLevel, setMicLevel] = useState(0);
   const [seconds, setSeconds] = useState(0);
   const [clock, setClock] = useState("");
+  const [profile, setProfile] = useState<NostrProfile | null>(null);
+  const nativeShell = useNativeShell();
 
   const avatarRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<AvatarRenderer | null>(null);
@@ -90,7 +125,11 @@ const App: React.FC = () => {
 
   const huddleRoom = "test-huddle-room";
   const huddleToken = "mock-token-for-huddle-connection";
-  const agentPubkey = "agent_pubkey_mock_value";
+  const agentPubkey =
+    (import.meta as any).env?.VITE_AGENT_PUBKEY || "agent_pubkey_mock_value";
+  // Shown until the agent's kind 0 metadata arrives (or if it publishes none).
+  const agentFallbackName = (import.meta as any).env?.VITE_AGENT_NAME || "Hermes";
+  const agentName = profileLabel(profile, agentPubkey, agentFallbackName);
 
   useEffect(() => {
     if (avatarRef.current && !rendererRef.current) {
@@ -129,6 +168,23 @@ const App: React.FC = () => {
     };
   }, []);
 
+  // Agent identity from its kind 0 metadata, and a tint sampled from its picture.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const p = await fetchProfile(relayUrl(), agentPubkey);
+      if (cancelled || !p) return;
+      setProfile(p);
+      if (p.picture) {
+        const tint = await tintFromImage(p.picture);
+        if (!cancelled && tint) {
+          (rendererRef.current as WebGLAvatarRenderer | null)?.setIdentityTint?.(tint);
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [agentPubkey]);
+
   // status-bar clock
   useEffect(() => {
     const tick = () =>
@@ -159,6 +215,28 @@ const App: React.FC = () => {
     setGrant(g);
     setNeedsConsent(false);
     startCall();
+  };
+
+  /** Ask the agent for ICE servers; fall back to public STUN if it is unreachable. */
+  const fetchIceServers = async (): Promise<RTCIceServer[]> => {
+    const fallback: RTCIceServer[] = [{ urls: "stun:stun.l.google.com:19302" }];
+    try {
+      const res = await fetch("/api/ice", { cache: "no-store" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const servers: RTCIceServer[] = data?.ice_servers ?? [];
+      if (!servers.length) return fallback;
+      const hasTurn = servers.some(s =>
+        (Array.isArray(s.urls) ? s.urls : [s.urls]).some(u => String(u).startsWith("turn"))
+      );
+      if (!hasTurn) {
+        console.warn("[ICE] No TURN server configured — calls over cellular/CGNAT will fail. Set TURN_HOST.");
+      }
+      return servers;
+    } catch (err) {
+      console.warn("[ICE] Could not reach /api/ice, using public STUN only:", err);
+      return fallback;
+    }
   };
 
   const setupClientVAD = (stream: MediaStream, audioTrack: MediaStreamTrack) => {
@@ -223,13 +301,12 @@ const App: React.FC = () => {
     smRef.current?.transition({ s: "listening" });
 
     try {
-      const defaultRelay =
-        typeof window !== "undefined" && window.location?.host
-          ? `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/nostr`
-          : "ws://localhost:8080";
-      const relayUrl = (import.meta as any).env?.VITE_RELAY_URL || defaultRelay;
-      signalingRef.current = new NostrSignaling(relayUrl, agentPubkey);
-      pcRef.current = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
+      signalingRef.current = new NostrSignaling(relayUrl(), agentPubkey);
+      // TURN credentials are short-lived and minted by the agent, so the secret
+      // never reaches the browser. Without relay candidates a call from cellular
+      // (behind carrier-grade NAT) cannot connect at all — STUN alone is not enough.
+      const iceServers = await fetchIceServers();
+      pcRef.current = new RTCPeerConnection({ iceServers });
 
       // Enforce Echo Cancellation, Noise Suppression, and AGC constraints
       const localStream = await navigator.mediaDevices.getUserMedia({
@@ -327,7 +404,7 @@ const App: React.FC = () => {
   const mmss = `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
 
   return (
-    <div className="room">
+    <div className={`room${nativeShell ? " native" : ""}`}>
       <div className="aurora a" style={{ background: glow }} />
       <div
         className="aurora b"
@@ -390,14 +467,31 @@ const App: React.FC = () => {
                 <div ref={avatarRef} className="avatar-mount" />
 
                 <div className="identity">
-                  <h2>Hermes</h2>
+                  {profile?.picture && (
+                    <img
+                      className="agent-photo"
+                      src={profile.picture}
+                      alt=""
+                      referrerPolicy="no-referrer"
+                      onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
+                    />
+                  )}
+                  <h2>{agentName}</h2>
                   <p>
                     {callActive
                       ? `${STATE_COPY[avatarState]} · ${mmss}`
-                      : "Agent · local-first"}
+                      : profile?.about?.trim() || "Agent · local-first"}
                   </p>
                   <div className="pubkey">
-                    <b>●</b> npub1herm…{agentPubkey.slice(-4)}
+                    {profile?.nip05 ? (
+                      <>
+                        <b>✓</b> {profile.nip05}
+                      </>
+                    ) : (
+                      <>
+                        <b>●</b> {agentPubkey.slice(0, 8)}…{agentPubkey.slice(-4)}
+                      </>
+                    )}
                   </div>
                 </div>
               </div>
@@ -431,7 +525,7 @@ const App: React.FC = () => {
                     <div className="call-row">
                       <button className="key primary" onClick={handleCallClick}>
                         {Icon.phone}
-                        Call Hermes
+                        Call {agentName.split(" ")[0]}
                       </button>
                     </div>
                   )}
@@ -442,7 +536,7 @@ const App: React.FC = () => {
 
           {needsConsent && (
             <ConsentSheet
-              agentName="Hermes"
+              agentName={agentName}
               scopes={["mic", "tools_during_call"]}
               onApprove={handleApproveConsent}
               onDeny={() => setNeedsConsent(false)}

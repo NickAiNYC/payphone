@@ -13,6 +13,7 @@ COPY --from=builder /app/dist /usr/share/nginx/html
 RUN echo 'server { \
     listen 80; \
     location / { root /usr/share/nginx/html; index index.html; try_files $uri $uri/ /index.html; } \
+    location = /manifest.webmanifest { root /usr/share/nginx/html; types { } default_type application/manifest+json; } \
     location /nostr { \
         proxy_pass http://nostr-relay:7777; \
         proxy_http_version 1.1; \

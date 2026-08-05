@@ -2,9 +2,21 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <!-- viewport-fit=cover lets the app paint into the safe-area insets when
+         launched standalone from the Home Screen. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#05060a" />
     <meta name="description" content="FaceTime for AI agents — addressable, P2P voice calls with real-time lip-sync over Nostr." />
+
+    <!-- Home Screen / standalone on iOS -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="payphone" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+
     <title>payphone</title>
   </head>
   <body>

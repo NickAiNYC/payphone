@@ -9,6 +9,7 @@ from skills.voice_avatar.consent.policy import RawMediaPolicy
 from skills.voice_avatar.consent.manager import ConsentManager
 from skills.voice_avatar.voice.llm.base import LLMProvider
 from secure_storage import HermesSecureStorage
+from ice_credentials import ice_servers
 
 storage = HermesSecureStorage()
 agent_key = storage.load_key()
@@ -86,7 +87,12 @@ async def call_offer(payload: OfferPayload):
         # Save to memory to prevent GC
         active_sessions[call_id] = {"session": session, "pipeline": pipeline}
 
-        return {"sdp": answer_sdp, "type": "answer", "call_id": call_id}
+        return {
+            "sdp": answer_sdp,
+            "type": "answer",
+            "call_id": call_id,
+            "ice_servers": ice_servers(name=call_id[:8]),
+        }
 
     except Exception as e:
         print(f"[API] Error handling call offer: {e}")
@@ -94,6 +100,16 @@ async def call_offer(payload: OfferPayload):
 
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/ice")
+async def get_ice_servers():
+    """Short-lived TURN credentials for the browser.
+
+    Fetched before the offer is built, so ICE gathering has relay candidates
+    available from the start rather than only host/srflx ones.
+    """
+    return {"ice_servers": ice_servers()}
 
 
 @app.post("/api/call/hangup/{call_id}")

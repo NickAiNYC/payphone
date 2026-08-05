@@ -47,7 +47,10 @@ services:
       - "3478:3478/udp"
     command:
       - -n
-      - --lt-cred-mech
+      # REST/time-limited credentials (implies long-term cred mechanism).
+      # --lt-cred-mech alone makes coturn look for a user table and reject
+      # HMAC credentials with "Cannot find credentials of user".
+      - --use-auth-secret
       - --fingerprint
       - --no-multicast-peers
       - --no-cli
@@ -80,6 +83,12 @@ services:
       - LIVEKIT_URL=ws://livekit-sfu:7880
       - LIVEKIT_API_KEY=${LIVEKIT_API_KEY:-devkey}
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:-secret}
+      # TURN: the agent mints short-lived REST credentials against this secret.
+      # TURN_HOST must be an address the *phone* can reach, not "localhost".
+      - COTURN_SECRET=${COTURN_SECRET:-coturnsecret}
+      - TURN_HOST=${TURN_HOST:-}
+      - TURN_PORT=${TURN_PORT:-3478}
+      - TURN_URLS=${TURN_URLS:-}
       - HF_HOME=/app/models/huggingface
       - PIPER_CACHE=/app/models/piper
     volumes:

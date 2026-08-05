@@ -15,6 +15,7 @@ from voice_avatar.consent.policy import RawMediaPolicy
 from voice_avatar.consent.manager import ConsentManager
 from voice_avatar.voice.llm.base import LLMProvider
 from secure_storage import HermesSecureStorage
+from ice_credentials import ice_servers
 
 RELAY_URL = "ws://localhost:8080"
 storage = HermesSecureStorage()
@@ -128,7 +129,11 @@ async def handle_offer(websocket, user_pubkey, offer_sdp):
 
     active_sessions[user_pubkey] = {"session": session, "pipeline": pipeline}
 
-    answer_payload = {"type": "answer", "sdp": answer_sdp}
+    answer_payload = {
+        "type": "answer",
+        "sdp": answer_sdp,
+        "ice_servers": ice_servers(name=user_pubkey[:8]),
+    }
     await publish_event(websocket, 21001, user_pubkey, answer_payload)
     print(
         f"[Nostr Listener] NIP-17 Gift-wrapped Answer SDP published to user: {user_pubkey}"

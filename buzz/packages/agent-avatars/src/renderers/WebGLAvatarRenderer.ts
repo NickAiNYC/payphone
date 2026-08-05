@@ -322,6 +322,7 @@ export class WebGLAvatarRenderer {
   private speak = 0;
   private listen = 0;
   private tint: [number, number, number] = [0.42, 0.68, 1.0];
+  private identityTint: [number, number, number] | null = null;
 
   private blinkTimer = 0;
   private blinkPhase = -1;
@@ -436,6 +437,12 @@ export class WebGLAvatarRenderer {
     this.emotion = emotion;
   }
 
+  /** Override the emotion palette with a per-agent tint (from its profile picture).
+   *  Emotions still modulate brightness and brow tilt; only the hue is pinned. */
+  setIdentityTint(rgb: [number, number, number] | null) {
+    this.identityTint = rgb;
+  }
+
   /** Drive the rim/iris energy from the client VAD level (0..1). */
   setLevel(v: number) {
     this.level = Math.max(0, Math.min(1, v));
@@ -487,7 +494,20 @@ export class WebGLAvatarRenderer {
     this.listen += ((s === "listening" ? 1 : 0) - this.listen) * kk;
     this.level += (0 - this.level) * (kk * 0.35); // decay unless refreshed
 
-    const target = EMOTION_TINT[this.emotion] || EMOTION_TINT.neutral;
+    // An agent's own colour wins over the emotion palette when it has one; the
+    // emotion still shifts it so happy/sad remain legible.
+    const emotionTint = EMOTION_TINT[this.emotion] || EMOTION_TINT.neutral;
+    let target = emotionTint;
+    if (this.identityTint) {
+      // Blending opposing hues in RGB collapses chroma to grey, so renormalise
+      // the result back to full saturation. Emotion still shifts the hue; the
+      // agent's own colour stays recognisable.
+      const mixed = emotionTint.map(
+        (c, i) => this.identityTint![i] * 0.80 + c * 0.20
+      ) as [number, number, number];
+      const peak = Math.max(mixed[0], mixed[1], mixed[2], 0.001);
+      target = mixed.map(c => c / peak) as [number, number, number];
+    }
     for (let i = 0; i < 3; i++) {
       this.tint[i] += (target[i] - this.tint[i]) * (kk * 0.6);
     }
