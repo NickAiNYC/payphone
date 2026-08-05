@@ -27,6 +27,8 @@ from coincurve import PrivateKey
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from context_resolver import resolve_context  # noqa: E402
+from memory import DurableFact  # noqa: E402
+from memory_store import fact_pointers, make_fact_fetcher, publish_fact  # noqa: E402
 from interruption_policy import InterruptionPolicy  # noqa: E402
 from ring_payload import (  # noqa: E402
     ReplayGuard,
@@ -34,12 +36,16 @@ from ring_payload import (  # noqa: E402
     sign_ring_payload,
     verify_ring_payload,
 )
+from secure_storage import HermesSecureStorage  # noqa: E402
 from skills.voice_avatar.consent.manager import verify_nostr_event_crypto  # noqa: E402
 
 RELAY = os.environ.get("DEMO_RELAY", "ws://localhost:8080")
 
 # Deterministic keys so the scenario is reproducible across runs.
-HERMES = PrivateKey(bytes.fromhex("a1" * 32))
+# The agent's real stored key, so durable facts written by the CLI are the
+# same ones this scenario reads back.
+AGENT_KEY = HermesSecureStorage().load_key()
+HERMES = PrivateKey(bytes.fromhex(AGENT_KEY))
 NICK = PrivateKey(bytes.fromhex("b2" * 32))
 HERMES_PUB = HERMES.public_key_xonly.format().hex()
 NICK_PUB = NICK.public_key_xonly.format().hex()
@@ -198,6 +204,22 @@ async def main():
             ),
         )
         ok("Two memory objects written — yesterday's session, today's CI result")
+
+        # A durable fact: smaller and longer-lived than the conversation it
+        # came from. This is the object that makes the *second* interaction
+        # different, and it survives restarts, models and devices.
+        durable_id = await publish_fact(
+            RELAY,
+            AGENT_KEY,
+            NICK_PUB,
+            DurableFact(
+                summary="Nick deploys on Fridays and wants CI failures raised same-day",
+                type="preference",
+                source_conversation_id="call-yesterday",
+            ),
+        )
+        ok(f"One durable fact stored — kind 31001, encrypted to (agent, Nick)")
+        note(f"  {durable_id[:24]}…")
         note(f"pointers: nostr:{yesterday[:12]}… nostr:{today[:12]}…")
 
         # ── the trigger ─────────────────────────────────────────────────────
@@ -275,6 +297,7 @@ async def main():
 
         # ── context ─────────────────────────────────────────────────────────
         scene(6, "Context resolves while it rings")
+        note("pointers are live kind 31001 facts, not fixtures")
 
         async def fetch_pointer(pointer):
             ev = await fetch_event(pointer.removeprefix("nostr:"))
@@ -284,8 +307,20 @@ async def main():
                 return None  # unverified memory is no memory
             return json.loads(ev["content"])
 
+        # Durable memory the agent has actually accumulated, alongside the
+        # per-call pointers in the envelope.
+        mem_pointers = await fact_pointers(RELAY, AGENT_KEY, NICK_PUB)
+        mem_fetch = make_fact_fetcher(RELAY, AGENT_KEY, NICK_PUB)
+
+        async def fetch_any(pointer):
+            if pointer.startswith("mem:"):
+                return await mem_fetch(pointer)
+            return await fetch_pointer(pointer)
+
         started = time.perf_counter()
-        ctx = await resolve_context(envelope["ctx"], fetch_pointer, started_at=started)
+        ctx = await resolve_context(
+            envelope["ctx"] + mem_pointers, fetch_any, started_at=started
+        )
         ok(
             f"{ctx.context_status.value} in {ctx.elapsed_ms} ms — {len(ctx.objects)} objects, signatures verified"
         )

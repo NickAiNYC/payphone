@@ -3,6 +3,8 @@ import secrets
 import uuid
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from typing import List, Optional
+
 from pydantic import BaseModel
 from skills.voice_avatar.calls.webrtc_endpoint import HermesCallSession
 from skills.voice_avatar.voice.pipeline import VoicePipeline, VoiceConfig
@@ -11,9 +13,16 @@ from skills.voice_avatar.consent.manager import ConsentManager
 from skills.voice_avatar.voice.llm.base import LLMProvider
 from secure_storage import HermesSecureStorage
 from ice_credentials import ice_servers
+from memory import FACT_TYPES, DurableFact
+from memory_store import fetch_facts, publish_fact
 
 storage = HermesSecureStorage()
 agent_key = storage.load_key()
+RELAY_URL = os.environ.get("RELAY_URL", "ws://localhost:8080")
+MEMORY_USER_PUBKEY = os.environ.get(
+    "MEMORY_USER_PUBKEY",
+    "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+)
 
 app = FastAPI()
 
@@ -53,6 +62,14 @@ app.add_middleware(
 
 # In-memory session store to prevent garbage collection
 active_sessions = {}
+
+
+class FactPayload(BaseModel):
+    summary: str
+    type: str = "fact"
+    confidence: float = 1.0
+    source_conversation_id: Optional[str] = None
+    supersedes: Optional[List[str]] = None
 
 
 class OfferPayload(BaseModel):
@@ -126,6 +143,51 @@ async def call_offer(payload: OfferPayload):
 
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/memory/add", dependencies=[Depends(require_api_key)])
+async def memory_add(payload: FactPayload):
+    """Store one durable fact.
+
+    Written by an explicit call, never by the model — storage and retrieval
+    have to be provably correct before extraction is layered on, or a failure
+    is ambiguous between a bad prompt and broken crypto.
+    """
+    if payload.type not in FACT_TYPES:
+        raise HTTPException(400, f"type must be one of {FACT_TYPES}")
+    try:
+        fact_id = await publish_fact(
+            RELAY_URL,
+            agent_key,
+            MEMORY_USER_PUBKEY,
+            DurableFact(
+                summary=payload.summary,
+                type=payload.type,
+                confidence=payload.confidence,
+                source_conversation_id=payload.source_conversation_id,
+                supersedes=payload.supersedes or [],
+            ),
+        )
+    except ValueError as err:
+        raise HTTPException(400, str(err))
+    return {"fact_id": fact_id, "stored": True}
+
+
+@app.get("/api/memory", dependencies=[Depends(require_api_key)])
+async def memory_list():
+    facts = await fetch_facts(RELAY_URL, agent_key, MEMORY_USER_PUBKEY)
+    return {
+        "facts": [
+            {
+                "fact_id": f.fact_id,
+                "type": f.type,
+                "summary": f.summary,
+                "confidence": f.confidence,
+                "created_at": f.created_at,
+            }
+            for f in facts
+        ]
+    }
 
 
 @app.get("/api/ice", dependencies=[Depends(require_api_key)])
