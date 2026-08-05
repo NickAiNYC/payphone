@@ -62,11 +62,48 @@ def _tagged_hash(tag: str, msg: bytes) -> bytes:
     return hashlib.sha256(tag_hash + tag_hash + msg).digest()
 
 
+def _verify_schnorr_python(sig_hex: str, pubkey_hex: str, event_id: str) -> bool:
+    """Pure-Python BIP-340 Schnorr verifier over secp256k1.
+    Called directly by differential tests to exercise the fallback path
+    independently of the coincurve fast-path dispatch.
+    """
+    try:
+        r_bytes = bytes.fromhex(sig_hex[:64])
+        s_bytes = bytes.fromhex(sig_hex[64:])
+        p_bytes = bytes.fromhex(pubkey_hex)
+        msg_bytes = bytes.fromhex(event_id)
+
+        r = int.from_bytes(r_bytes, "big")
+        s = int.from_bytes(s_bytes, "big")
+        if r >= _SECP256K1_P or s >= _SECP256K1_N:
+            return False
+
+        P_point = _lift_x(int.from_bytes(p_bytes, "big"))
+        if P_point is None:
+            return False
+
+        e_bytes = _tagged_hash("BIP0340/challenge", r_bytes + p_bytes + msg_bytes)
+        e = int.from_bytes(e_bytes, "big") % _SECP256K1_N
+
+        sG = _point_mul(_SECP256K1_G, s)
+        eP = _point_mul(P_point, e)
+        neg_eP = (eP[0], _SECP256K1_P - eP[1]) if eP else None
+        R = _point_add(sG, neg_eP)
+
+        if R is None or R[1] % 2 != 0 or R[0] != r:
+            return False
+
+        return True
+    except Exception:
+        return False
+
+
 def verify_nostr_event_crypto(event: dict, expected_pubkey: str) -> bool:
     """Strictly verifies a Nostr event:
     1. Enforces event.pubkey == expected_pubkey.
     2. Recomputes event.id digest over canonical JSON structure.
-    3. Cryptographically verifies BIP-340 Schnorr signature over secp256k1.
+    3. Cryptographically verifies BIP-340 Schnorr signature via coincurve
+       fast-path (libsecp256k1) when available, or pure-Python fallback.
     """
     try:
         pubkey_hex = event.get("pubkey", "")
@@ -120,35 +157,9 @@ def verify_nostr_event_crypto(event: dict, expected_pubkey: str) -> bool:
         except Exception as fast_err:
             logger.debug(f"[ConsentManager] coincurve verification error: {fast_err}")
 
-        r_bytes = bytes.fromhex(sig_hex[:64])
-        s_bytes = bytes.fromhex(sig_hex[64:])
-        p_bytes = bytes.fromhex(pubkey_hex)
-        msg_bytes = bytes.fromhex(event_id)
+        # Pure-Python fallback (zero dependencies)
+        return _verify_schnorr_python(sig_hex, pubkey_hex, event_id)
 
-        r = int.from_bytes(r_bytes, "big")
-        s = int.from_bytes(s_bytes, "big")
-        if r >= _SECP256K1_P or s >= _SECP256K1_N:
-            return False
-
-        P_point = _lift_x(int.from_bytes(p_bytes, "big"))
-        if P_point is None:
-            return False
-
-        e_bytes = _tagged_hash("BIP0340/challenge", r_bytes + p_bytes + msg_bytes)
-        e = int.from_bytes(e_bytes, "big") % _SECP256K1_N
-
-        sG = _point_mul(_SECP256K1_G, s)
-        eP = _point_mul(P_point, e)
-        neg_eP = (eP[0], _SECP256K1_P - eP[1]) if eP else None
-        R = _point_add(sG, neg_eP)
-
-        if R is None or R[1] % 2 != 0 or R[0] != r:
-            logger.warning(
-                "[ConsentManager] Invalid BIP-340 Schnorr signature on consent event"
-            )
-            return False
-
-        return True
     except Exception as exc:
         logger.error(f"[ConsentManager] Exception verifying event signature: {exc}")
         return False
