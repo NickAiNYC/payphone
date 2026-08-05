@@ -101,23 +101,24 @@ def verify_nostr_event_crypto(event: dict, expected_pubkey: str) -> bool:
             logger.warning("[ConsentManager] Malformed signature or pubkey byte length")
             return False
 
-        # Optional fast-path via coincurve / libsecp256k1 if available
+        # Fast-path via coincurve (libsecp256k1) if installed (~30 µs per event)
         try:
-            import coincurve
+            from coincurve import PublicKeyXOnly
 
-            if hasattr(coincurve, "verify_schnorr"):
-                sig_bytes = bytes.fromhex(event.get("sig", ""))
-                msg_bytes = bytes.fromhex(event_id)
-                pub_bytes = bytes.fromhex(pubkey_hex)
-                if coincurve.verify_schnorr(sig_bytes, msg_bytes, pub_bytes):
-                    return True
-                else:
-                    logger.warning(
-                        "[ConsentManager] coincurve Schnorr verification failed"
-                    )
-                    return False
-        except Exception:
+            sig_bytes = bytes.fromhex(sig_hex)
+            msg_bytes = bytes.fromhex(event_id)
+            pub_bytes = bytes.fromhex(pubkey_hex)
+            if PublicKeyXOnly(pub_bytes).verify(sig_bytes, msg_bytes):
+                return True
+            else:
+                logger.warning(
+                    "[ConsentManager] coincurve Schnorr signature verification failed"
+                )
+                return False
+        except ImportError:
             pass
+        except Exception as fast_err:
+            logger.debug(f"[ConsentManager] coincurve verification error: {fast_err}")
 
         r_bytes = bytes.fromhex(sig_hex[:64])
         s_bytes = bytes.fromhex(sig_hex[64:])

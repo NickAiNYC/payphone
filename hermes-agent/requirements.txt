@@ -12,4 +12,5 @@ cryptography
 pydantic
 pytest
 pytest-asyncio
+coincurve>=20.0.0
 

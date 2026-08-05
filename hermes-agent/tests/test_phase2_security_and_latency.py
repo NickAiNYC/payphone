@@ -72,3 +72,30 @@ async def test_relay_consent_signature_verification_and_forgery_rejection():
 
     # Must fail closed (return None) when relay events fail cryptographic verification
     assert grant is None
+
+
+def test_coincurve_fast_path_agreement():
+    """Asserts that coincurve PublicKeyXOnly fast-path and pure-Python BIP-340 verifiers agree 100%."""
+    try:
+        from coincurve import PublicKeyXOnly
+    except ImportError:
+        pytest.skip("coincurve not installed in local environment")
+
+    valid_event = {
+        "kind": 21005,
+        "created_at": 1700000000,
+        "tags": [["p", "agent_pubkey"]],
+        "content": '{"scopes":["mic"],"record":false,"server_processing_opt_in":false,"expiration":1800000000}',
+        "pubkey": "75d0e3c1fd7b4346f4c0b343fac81320c33625aebb602e662efc000e77300f55",
+        "id": "8e30354454ef67487d2d971b0620f5c95cb9615b405f61d344c9bf7c17a2aa51",
+        "sig": "08328fe94fb82f78f929cf33325099447d68f03515400ad16fc63b12950039508122a8b5f7224f56c3ede4a41709ac2a5ed1d5a7eefd73102afb7bd78504f5d8",
+    }
+
+    sig_bytes = bytes.fromhex(valid_event["sig"])
+    msg_bytes = bytes.fromhex(valid_event["id"])
+    pub_bytes = bytes.fromhex(valid_event["pubkey"])
+
+    coincurve_result = PublicKeyXOnly(pub_bytes).verify(sig_bytes, msg_bytes)
+    python_result = verify_nostr_event_crypto(valid_event, valid_event["pubkey"])
+
+    assert coincurve_result == python_result == True
