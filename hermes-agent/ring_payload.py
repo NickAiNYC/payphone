@@ -94,11 +94,67 @@ def sign_ring_payload(payload: Dict[str, Any], sign) -> Dict[str, Any]:
     return signed
 
 
+class ReplayGuard:
+    """Rejects a ring whose (agent, call_id) has already been consumed.
+
+    A signature proves *origin*, not *freshness*. An attacker who captures a
+    valid push can replay it verbatim: the signature still verifies, and the
+    device rings for something that already happened. Expiry alone only narrows
+    the window — inside it, replay is free.
+
+    The store is self-bounding: an entry is only useful until the payload's own
+    `exp`, after which the expiry check rejects it anyway. So retention is
+    O(rings per TTL), not unbounded, and eviction needs no policy beyond time.
+
+    Not thread-safe by design — the iOS push handler is single-threaded, and the
+    agent-side equivalent should hold this behind whatever lock it already has.
+    """
+
+    def __init__(self, max_entries: int = 4096):
+        self._seen: Dict[str, int] = {}
+        self._max_entries = max_entries
+
+    @staticmethod
+    def _key(payload: Dict[str, Any]) -> str:
+        # Scoped by agent: two agents may legitimately mint the same call_id.
+        return f"{payload.get('agent', '')}:{payload.get('call_id', '')}"
+
+    def _drop_expired(self, ts: int) -> None:
+        for key in [k for k, exp in self._seen.items() if exp < ts]:
+            del self._seen[key]
+
+    def _enforce_cap(self) -> None:
+        """Pathological case only: an attacker flooding distinct unexpired ids.
+        Drop the soonest-to-expire first, so live rings outlive stale ones."""
+        overflow = len(self._seen) - self._max_entries
+        if overflow > 0:
+            for key, _ in sorted(self._seen.items(), key=lambda kv: kv[1])[:overflow]:
+                del self._seen[key]
+
+    def consume(self, payload: Dict[str, Any], now: Optional[int] = None) -> bool:
+        """True the first time a ring is seen, False on every replay."""
+        ts = int(time.time()) if now is None else int(now)
+        self._drop_expired(ts)
+
+        key = self._key(payload)
+        if key in self._seen:
+            return False
+
+        self._seen[key] = int(payload.get("exp", ts))
+        # Capped after insertion, so the bound holds on exit rather than on entry.
+        self._enforce_cap()
+        return True
+
+    def __len__(self) -> int:
+        return len(self._seen)
+
+
 def verify_ring_payload(
     payload: Dict[str, Any],
     expected_agent: str,
     now: Optional[int] = None,
     clock_skew: int = 30,
+    replay_guard: Optional["ReplayGuard"] = None,
 ) -> bool:
     """Mirror of the device-side check, in the order the device runs it.
 
@@ -106,8 +162,9 @@ def verify_ring_payload(
     scheme can be tested server-side and so both implementations have one
     reference to agree with.
 
-    Replay rejection (has this call_id been seen?) is deliberately not handled
-    here — it needs per-device state, and belongs with the caller.
+    Pass a ReplayGuard to reject replays. It is optional only because the store
+    is per-device state; omitting it leaves a captured push replayable inside its
+    expiry window, so production callers should always supply one.
     """
     from skills.voice_avatar.consent.manager import verify_schnorr
 
@@ -124,8 +181,16 @@ def verify_ring_payload(
         if not agent or agent.lower() != expected_agent.lower():
             return False
 
-        return verify_schnorr(
+        if not verify_schnorr(
             payload.get("sig", ""), agent, payload_digest(payload).hex()
-        )
+        ):
+            return False
+
+        # Consumed last: a forged ring must not be able to burn a call_id and
+        # so block the genuine one that follows.
+        if replay_guard is not None and not replay_guard.consume(payload, ts):
+            return False
+
+        return True
     except (ValueError, TypeError, KeyError):
         return False

@@ -80,9 +80,19 @@ whitespace, `ensure_ascii=false`.
 Verification on the device, in order, all before `reportNewIncomingCall`:
 
 1. `exp` is in the future and `iat` is not absurdly old → else drop
-2. `call_id` has not been seen → else drop (replay)
-3. `sig` verifies against `agent` → else drop
+2. `sig` verifies against `agent` → else drop
+3. `(agent, call_id)` has not been consumed → else drop (replay)
 4. `agent` is in the local roster with a live `ring` consent grant → else drop
+
+Order matters. A signature proves *origin*, not *freshness* — an attacker who
+captures a valid push can replay it verbatim and the signature still verifies.
+Expiry narrows the window; inside it, replay is free without step 3.
+
+Replay consumption comes **after** signature verification, not before, so a
+forged ring cannot burn a `call_id` and block the genuine ring that follows.
+The store is self-bounding: an entry is only useful until that payload's own
+`exp`, after which step 1 rejects it anyway. Implemented as `ReplayGuard` in
+[`ring_payload.py`](../hermes-agent/ring_payload.py).
 
 All four are local. None require the network. A push failing any of them is
 still reported to CallKit and immediately ended with

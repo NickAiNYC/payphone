@@ -110,3 +110,82 @@ def test_oversized_payload_refused_at_build_time():
     """Better to fail on the agent than to have APNs silently drop the push."""
     with pytest.raises(ValueError, match="over the"):
         make(reason="x" * (MAX_PAYLOAD_BYTES + 100))
+
+
+# ---- replay protection -------------------------------------------------
+# A signature proves origin, not freshness. These cover the case where an
+# attacker replays a *valid* push rather than trying to forge one.
+
+
+def test_replay_of_a_valid_ring_is_rejected():
+    from ring_payload import ReplayGuard
+
+    guard = ReplayGuard()
+    p = make()
+    assert verify_ring_payload(p, AGENT_PUB, replay_guard=guard) is True
+    assert verify_ring_payload(p, AGENT_PUB, replay_guard=guard) is False
+    assert verify_ring_payload(p, AGENT_PUB, replay_guard=guard) is False
+
+
+def test_distinct_calls_are_not_confused():
+    from ring_payload import ReplayGuard
+
+    guard = ReplayGuard()
+    assert verify_ring_payload(make(), AGENT_PUB, replay_guard=guard) is True
+    assert verify_ring_payload(make(), AGENT_PUB, replay_guard=guard) is True
+
+
+def test_call_id_is_scoped_per_agent():
+    """Two agents may legitimately mint the same call_id."""
+    from ring_payload import ReplayGuard
+
+    guard = ReplayGuard()
+    a = make(call_id="shared-id")
+    b = make(signer=ATTACKER, call_id="shared-id")
+    assert verify_ring_payload(a, AGENT_PUB, replay_guard=guard) is True
+    assert verify_ring_payload(b, ATTACKER_PUB, replay_guard=guard) is True
+
+
+def test_a_forged_ring_cannot_burn_a_call_id():
+    """Consumption happens after signature check, so a bad ring cannot block
+    the genuine one that follows."""
+    from ring_payload import ReplayGuard
+
+    guard = ReplayGuard()
+    forged = make(call_id="victim-call")
+    forged["reason"] = "tampered"
+    assert verify_ring_payload(forged, AGENT_PUB, replay_guard=guard) is False
+
+    genuine = make(call_id="victim-call")
+    assert verify_ring_payload(genuine, AGENT_PUB, replay_guard=guard) is True
+
+
+def test_guard_evicts_expired_entries():
+    """Retention is bounded by TTL — past exp, the expiry check rejects anyway."""
+    from ring_payload import ReplayGuard
+
+    guard = ReplayGuard()
+    base = int(time.time())
+    p = sign_ring_payload(
+        build_ring_payload(AGENT_PUB, "Hermes", "hi", "room", now=base, ttl=60),
+        AGENT.sign_schnorr,
+    )
+    assert verify_ring_payload(p, AGENT_PUB, now=base, replay_guard=guard) is True
+    assert len(guard) == 1
+    guard.consume(
+        build_ring_payload(AGENT_PUB, "x", "y", "z", now=base + 600), now=base + 600
+    )
+    assert len(guard) == 1  # the 60s entry was evicted, only the new one remains
+
+
+def test_guard_is_bounded_under_flood():
+    from ring_payload import ReplayGuard
+
+    guard = ReplayGuard(max_entries=64)
+    base = int(time.time())
+    for i in range(500):
+        guard.consume(
+            build_ring_payload(AGENT_PUB, "x", "y", "z", call_id=f"c{i}", now=base),
+            now=base,
+        )
+    assert len(guard) <= 64
