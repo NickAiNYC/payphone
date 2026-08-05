@@ -14,7 +14,7 @@ RUN echo 'server { \
     listen 80; \
     location / { root /usr/share/nginx/html; index index.html; try_files $uri $uri/ /index.html; } \
     location /nostr { \
-        proxy_pass http://nostr-relay:8080; \
+        proxy_pass http://nostr-relay:7777; \
         proxy_http_version 1.1; \
         proxy_set_header Upgrade $http_upgrade; \
         proxy_set_header Connection "Upgrade"; \
