@@ -1,10 +1,72 @@
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useCallback } from "react";
 import { ConsentSheet } from "@buzz/ui/src/ConsentSheet";
 import { ConsentGrant } from "@buzz/agent-consent/src/types";
-import { AvatarStateMachine } from "@buzz/agent-avatars/src/AvatarStateMachine";
+import { AvatarStateMachine, AvatarState } from "@buzz/agent-avatars/src/AvatarStateMachine";
+import { WebGLAvatarRenderer } from "@buzz/agent-avatars/src/renderers/WebGLAvatarRenderer";
 import { CanvasSpriteRenderer } from "@buzz/agent-avatars/src/renderers/CanvasSpriteRenderer";
 import { NostrSignaling } from "@buzz/nostr/src/NostrSignaling";
 import { HuddlePanel } from "@buzz/huddle/src/HuddlePanel";
+import "./styles.css";
+
+/** Both renderers satisfy this; WebGL is preferred, canvas is the fallback. */
+type AvatarRenderer = {
+  mount(el: HTMLElement): void | Promise<void>;
+  unmount(): void;
+  applyState(e: any): void;
+  applyViseme(v: string, ms: number): void;
+  applyEmotion(e: string, i: number): void;
+  setLevel?(v: number): void;
+};
+
+const STATE_COPY: Record<AvatarState, string> = {
+  sleeping: "Asleep",
+  idle: "Ready",
+  listening: "Listening",
+  thinking: "Thinking",
+  speaking: "Speaking",
+  reacting: "Reacting",
+  tool_using: "Running tools",
+};
+
+const EMOTION_GLOW: Record<string, string> = {
+  neutral: "rgba(106,169,255,0.55)",
+  happy: "rgba(90,240,180,0.55)",
+  sad: "rgba(140,128,255,0.55)",
+  curious: "rgba(255,190,92,0.55)",
+  focused: "rgba(255,140,108,0.55)",
+};
+
+const Icon = {
+  mic: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+      <rect x="9" y="2.5" width="6" height="11" rx="3" />
+      <path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21" />
+    </svg>
+  ),
+  micOff: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+      <path d="M15 5a3 3 0 0 0-6 0v5M9 13.2A3 3 0 0 0 15 12v-1" />
+      <path d="M5.5 11a6.5 6.5 0 0 0 10.4 5.2M12 17.5V21M3.5 3l17 17" />
+    </svg>
+  ),
+  people: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+      <circle cx="9" cy="8" r="3.2" />
+      <path d="M2.8 19.5a6.2 6.2 0 0 1 12.4 0" />
+      <path d="M16.2 5.2a3.2 3.2 0 0 1 0 5.9M17.4 14.2a6.2 6.2 0 0 1 3.8 5.3" />
+    </svg>
+  ),
+  phone: (
+    <svg viewBox="0 0 24 24" fill="currentColor">
+      <path d="M6.6 2.7a1.7 1.7 0 0 1 2.3.6l1.5 2.6a1.7 1.7 0 0 1-.3 2.1L8.8 9.2a10.6 10.6 0 0 0 6 6l1.2-1.3a1.7 1.7 0 0 1 2.1-.3l2.6 1.5a1.7 1.7 0 0 1 .6 2.3l-1 1.7a2.6 2.6 0 0 1-2.9 1.2C11.6 18.8 5.2 12.4 3.7 5.6A2.6 2.6 0 0 1 4.9 2.7z" />
+    </svg>
+  ),
+  hangup: (
+    <svg viewBox="0 0 24 24" fill="currentColor">
+      <path d="M12 8.5c-2.6 0-5 .5-7 1.4v3a1.5 1.5 0 0 0 2.3 1.3l1.6-1a1.4 1.4 0 0 0 .7-1.2v-1.3c1.6-.4 3.2-.4 4.8 0V12a1.4 1.4 0 0 0 .7 1.2l1.6 1A1.5 1.5 0 0 0 19 12.9v-3c-2-.9-4.4-1.4-7-1.4z" transform="rotate(133 12 12)" />
+    </svg>
+  ),
+};
 
 const App: React.FC = () => {
   const [needsConsent, setNeedsConsent] = useState(false);
@@ -12,8 +74,14 @@ const App: React.FC = () => {
   const [huddleActive, setHuddleActive] = useState(false);
   const [grant, setGrant] = useState<ConsentGrant | null>(null);
   const [isUserSpeaking, setIsUserSpeaking] = useState(false);
+  const [avatarState, setAvatarState] = useState<AvatarState>("idle");
+  const [emotion, setEmotion] = useState("neutral");
+  const [micLevel, setMicLevel] = useState(0);
+  const [seconds, setSeconds] = useState(0);
+  const [clock, setClock] = useState("");
+
   const avatarRef = useRef<HTMLDivElement>(null);
-  const rendererRef = useRef<CanvasSpriteRenderer | null>(null);
+  const rendererRef = useRef<AvatarRenderer | null>(null);
   const smRef = useRef<AvatarStateMachine | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const signalingRef = useRef<NostrSignaling | null>(null);
@@ -26,20 +94,56 @@ const App: React.FC = () => {
 
   useEffect(() => {
     if (avatarRef.current && !rendererRef.current) {
-      const renderer = new CanvasSpriteRenderer();
+      const el = avatarRef.current;
+      let renderer: AvatarRenderer = new WebGLAvatarRenderer();
       const sm = new AvatarStateMachine();
-      renderer.mount(avatarRef.current);
-      sm.on(e => renderer.applyState(e));
+      renderer.mount(el);
+      // Fall back to the 2D sprite renderer where WebGL2 is unavailable.
+      if (renderer instanceof WebGLAvatarRenderer && !renderer.supported) {
+        renderer.unmount();
+        renderer = new CanvasSpriteRenderer();
+        renderer.mount(el);
+      }
+      sm.on(e => {
+        renderer.applyState(e);
+        setAvatarState(e.s);
+        setEmotion(e.e);
+      });
       rendererRef.current = renderer;
       smRef.current = sm;
       sm.wake();
       sm.transition({ s: "idle" });
+
+      // Dev-only handle for driving the avatar without a live call.
+      if ((import.meta as any).env?.DEV) {
+        (window as any).__payphone = { renderer, sm };
+      }
     }
-    return () => { 
-      rendererRef.current?.unmount(); 
+    return () => {
+      rendererRef.current?.unmount();
+      // Null the refs so React 18 StrictMode's second effect pass rebuilds the
+      // renderer rather than holding on to the one it just tore down.
+      rendererRef.current = null;
+      smRef.current = null;
       cleanupAudio();
     };
   }, []);
+
+  // status-bar clock
+  useEffect(() => {
+    const tick = () =>
+      setClock(new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }));
+    tick();
+    const id = setInterval(tick, 10_000);
+    return () => clearInterval(id);
+  }, []);
+
+  // call duration
+  useEffect(() => {
+    if (!callActive) { setSeconds(0); return; }
+    const id = setInterval(() => setSeconds(s => s + 1), 1000);
+    return () => clearInterval(id);
+  }, [callActive]);
 
   const handleCallClick = () => {
     if (!grant || grant.expiration <= Date.now()) {
@@ -49,9 +153,7 @@ const App: React.FC = () => {
     }
   };
 
-  const handleHuddleClick = () => {
-    setHuddleActive(true);
-  };
+  const handleHuddleClick = () => setHuddleActive(true);
 
   const handleApproveConsent = (g: ConsentGrant) => {
     setGrant(g);
@@ -68,7 +170,7 @@ const App: React.FC = () => {
 
     const bufferLength = analyser.frequencyBinCount;
     const dataArray = new Uint8Array(bufferLength);
-    
+
     let silenceThreshold = 15; // Noise gate threshold
     let silenceTimeout = 800; // Keep track active for 800ms of silence (debounce)
     let lastSpokenTime = 0;
@@ -80,6 +182,11 @@ const App: React.FC = () => {
         sum += dataArray[i];
       }
       const averageVolume = sum / bufferLength;
+
+      // Feed the normalised level to the 3D renderer and the UI rings
+      const norm = Math.min(1, averageVolume / 55);
+      rendererRef.current?.setLevel?.(norm);
+      setMicLevel(norm);
 
       if (averageVolume > silenceThreshold) {
         lastSpokenTime = Date.now();
@@ -123,7 +230,7 @@ const App: React.FC = () => {
       const relayUrl = (import.meta as any).env?.VITE_RELAY_URL || defaultRelay;
       signalingRef.current = new NostrSignaling(relayUrl, agentPubkey);
       pcRef.current = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
-      
+
       // Enforce Echo Cancellation, Noise Suppression, and AGC constraints
       const localStream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -133,7 +240,7 @@ const App: React.FC = () => {
         },
         video: false
       });
-      
+
       const audioTrack = localStream.getAudioTracks()[0];
       localStream.getTracks().forEach(track => pcRef.current!.addTrack(track, localStream));
 
@@ -156,6 +263,7 @@ const App: React.FC = () => {
                 rendererRef.current?.applyViseme(data.viseme, data.duration_ms);
               } else if (data.type === "emotion") {
                 rendererRef.current?.applyEmotion(data.emotion, data.intensity);
+                setEmotion(data.emotion);
               } else {
                 smRef.current?.transition({
                   s: data.s,
@@ -195,7 +303,7 @@ const App: React.FC = () => {
       const offer = await pcRef.current.createOffer();
       await pcRef.current.setLocalDescription(offer);
       await signalingRef.current.sendOffer(offer.sdp!);
-      
+
     } catch (err) {
       console.error("Failed to establish WebRTC connection:", err);
       hangup();
@@ -205,6 +313,7 @@ const App: React.FC = () => {
   const hangup = () => {
     setCallActive(false);
     setIsUserSpeaking(false);
+    setMicLevel(0);
     smRef.current?.transition({ s: "idle" });
     cleanupAudio();
     if (pcRef.current) {
@@ -214,67 +323,135 @@ const App: React.FC = () => {
     signalingRef.current = null;
   };
 
+  const glow = EMOTION_GLOW[emotion] || EMOTION_GLOW.neutral;
+  const mmss = `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
+
   return (
-    <div style={{ padding: "2rem", background: "#111", color: "#eee", minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center" }}>
-      <h1>Buzz × Hermes Test Environment</h1>
-      <p>Local-first voice & avatar system is initialized.</p>
-      
-      {huddleActive ? (
-        <HuddlePanel 
-          roomName={huddleRoom} 
-          token={huddleToken} 
-          onDisconnect={() => setHuddleActive(false)} 
-        />
-      ) : (
-        <>
-          {/* Avatar Stage */}
-          <div style={{ display: "flex", justifyContent: "center", alignItems: "center", margin: "2rem 0", border: "1px solid #333", borderRadius: "12px", padding: "1rem", background: "#000", position: "relative" }}>
-            <div ref={avatarRef} style={{ width: "400px", height: "400px" }} />
-            {callActive && (
-              <div style={{ position: "absolute", bottom: "10px", right: "20px", background: isUserSpeaking ? "#34C759" : "#555", padding: "4px 8px", borderRadius: "4px", fontSize: "12px", fontWeight: "bold" }}>
-                {isUserSpeaking ? "🎙️ USER SPEAKING" : "🔇 USER SILENT"}
+    <div className="room">
+      <div className="aurora a" style={{ background: glow }} />
+      <div
+        className="aurora b"
+        style={{ background: callActive ? "rgba(60,120,255,0.45)" : "rgba(120,90,255,0.32)" }}
+      />
+      <div className="grain" />
+
+      <div className="phone">
+        <div className="screen">
+          {/* Dynamic Island */}
+          <div className={`island${callActive ? " expanded" : ""}`}>
+            <span className={`island-dot${callActive ? " live" : ""}`} />
+            <span className="island-label">
+              {callActive ? STATE_COPY[avatarState] : "payphone"}
+            </span>
+            {callActive && avatarState === "speaking" && (
+              <span className="eq"><i /><i /><i /><i /></span>
+            )}
+            <span className="island-time">{callActive ? mmss : clock}</span>
+          </div>
+
+          {huddleActive ? (
+            <div className="huddle-wrap">
+              <HuddlePanel
+                roomName={huddleRoom}
+                token={huddleToken}
+                onDisconnect={() => setHuddleActive(false)}
+              />
+            </div>
+          ) : (
+            <>
+              <div className="stage">
+                <div
+                  className="avatar-halo"
+                  style={{
+                    background: glow,
+                    opacity: 0.35 + micLevel * 0.4 + (avatarState === "speaking" ? 0.25 : 0),
+                    transform: `scale(${1 + micLevel * 0.09})`,
+                  }}
+                />
+
+                <div className="rings">
+                  {[0.52, 0.68, 0.86].map((s, i) => (
+                    <div
+                      key={i}
+                      className="ring"
+                      style={{
+                        width: `${s * 100}%`,
+                        aspectRatio: "1",
+                        transform: `scale(${1 + micLevel * (0.05 + i * 0.035)})`,
+                        opacity: callActive ? 0.85 - i * 0.22 : 0.3 - i * 0.08,
+                        borderColor: isUserSpeaking
+                          ? "rgba(50,215,75,0.42)"
+                          : "rgba(255,255,255,0.10)",
+                      }}
+                    />
+                  ))}
+                </div>
+
+                <div ref={avatarRef} className="avatar-mount" />
+
+                <div className="identity">
+                  <h2>Hermes</h2>
+                  <p>
+                    {callActive
+                      ? `${STATE_COPY[avatarState]} · ${mmss}`
+                      : "Agent · local-first"}
+                  </p>
+                  <div className="pubkey">
+                    <b>●</b> npub1herm…{agentPubkey.slice(-4)}
+                  </div>
+                </div>
               </div>
-            )}
-          </div>
 
-          {/* Controls */}
-          <div style={{ display: "flex", gap: "1rem" }}>
-            <button 
-              onClick={handleCallClick} 
-              disabled={callActive}
-              style={{ padding: "10px 20px", background: callActive ? "#555" : "#4A90E2", color: "white", border: "none", borderRadius: "4px", cursor: callActive ? "not-allowed" : "pointer", fontSize: "16px" }}
-            >
-              {callActive ? "🔴 Call Active" : "📞 Call Agent"}
-            </button>
-            
-            <button 
-              onClick={handleHuddleClick}
-              disabled={callActive}
-              style={{ padding: "10px 20px", background: "#34C759", color: "white", border: "none", borderRadius: "4px", cursor: "pointer", fontSize: "16px" }}
-            >
-              👥 Join Huddle Room
-            </button>
+              {/* Controls */}
+              <div className="dock">
+                <div className="tray">
+                  <button
+                    className={`key${isUserSpeaking ? " on" : ""}`}
+                    disabled={!callActive}
+                    title={isUserSpeaking ? "Transmitting" : "Gated by VAD"}
+                  >
+                    {isUserSpeaking ? Icon.mic : Icon.micOff}
+                    {isUserSpeaking ? "Live" : "Gated"}
+                  </button>
 
-            {callActive && (
-              <button 
-                onClick={hangup}
-                style={{ padding: "10px 20px", background: "#E24A4A", color: "white", border: "none", borderRadius: "4px", cursor: "pointer", fontSize: "16px" }}
-              >
-                ❌ Hangup
-              </button>
-            )}
-          </div>
-        </>
-      )}
+                  <button className="key" onClick={handleHuddleClick} disabled={callActive}>
+                    {Icon.people}
+                    Huddle
+                  </button>
 
-      {/* Consent Modal */}
-      {needsConsent && (
-        <ConsentSheet 
-          agentName="Hermes" 
-          scopes={["mic", "tools_during_call"]} 
-          onApprove={handleApproveConsent} 
-        />
-      )}
+                  <button
+                    className={`key${callActive ? " danger" : ""}`}
+                    onClick={callActive ? hangup : handleCallClick}
+                  >
+                    {callActive ? Icon.hangup : Icon.phone}
+                    {callActive ? "End" : "Call"}
+                  </button>
+
+                  {!callActive && (
+                    <div className="call-row">
+                      <button className="key primary" onClick={handleCallClick}>
+                        {Icon.phone}
+                        Call Hermes
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </>
+          )}
+
+          {needsConsent && (
+            <ConsentSheet
+              agentName="Hermes"
+              scopes={["mic", "tools_during_call"]}
+              onApprove={handleApproveConsent}
+              onDeny={() => setNeedsConsent(false)}
+            />
+          )}
+
+          <div className="home-indicator" />
+        </div>
+      </div>
     </div>
   );
 };
